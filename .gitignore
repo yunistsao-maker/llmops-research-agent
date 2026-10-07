@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/
+
+# local env / secrets (agentcore/.gitignore also ignores agentcore/.env.local)
+.env
+.env.local
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+
+# build output and local data locations
+build/
+_local/
+node_modules/

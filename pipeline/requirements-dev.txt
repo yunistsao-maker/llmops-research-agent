@@ -1,0 +1,8 @@
+# Running the pipeline tests:  uv run --with-requirements pipeline/requirements-dev.txt python -m pytest pipeline/tests
+-r requirements.txt
+pytest>=8
+pyyaml>=6
+# S3, SNS and Step Functions in memory.  Without moto the S3 / second-engine variants of the tests are skipped.
+moto[s3,sns,stepfunctions]>=5.1
+# The two templates in infra/ are linted by tests/test_infra.py (skipped when cfn-lint is not installed).
+cfn-lint>=1.20

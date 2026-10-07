@@ -1,0 +1,5 @@
+# What the pipeline's Lambda functions need at run time (vendored into the bundle by scripts/build_lambdas.py).
+# boto3 is vendored on purpose: the copy inside the Lambda runtime may be too old for S3 conditional writes
+# (PutObject If-Match / If-None-Match) or for the bedrock-agentcore client.
+jsonschema>=4.18,<5
+boto3>=1.40

@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llmops_research"
+version = "0.1.0"
+description = "AgentCore Runtime agent that researches public sources and proposes validated updates to the LLMOps portal data"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "aws-opentelemetry-distro ~= 0.18.0",
+    "bedrock-agentcore >= 1.24.0",
+    "boto3 >= 1.40.0",
+    "botocore[crt] >= 1.40.0",
+    "strands-agents >= 1.57.0",
+    # fetching / parsing public pages (pure Python on purpose: the runtime image has no compiler)
+    "httpx >= 0.27",
+    "beautifulsoup4 >= 4.12",
+    # pages that omit optional end tags (</td></tr></li>) need the HTML5 tree-building rules; pure Python
+    "html5lib >= 1.1",
+    # portal JSON Schema (draft-07) validation
+    "jsonschema >= 4.18",
+]
+
+[project.optional-dependencies]
+# AgentCore Browser (Playwright over CDP) for JavaScript-rendered pages; also set ENABLE_BROWSER=true
+browser = ["playwright >= 1.50"]
+# MODEL_PROVIDER=anthropic (direct Anthropic API instead of Bedrock)
+anthropic = ["strands-agents[anthropic] >= 1.57.0"]
+dev = ["pytest >= 8"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]

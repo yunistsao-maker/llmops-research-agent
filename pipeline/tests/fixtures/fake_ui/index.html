@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8"><title>fake portal UI (test fixture for scripts/ui_smoke.py)</title>
+<!-- Like the real app: a stylesheet from another site.  The check must neither need it nor trip over it. -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter">
+</head>
+<body>
+<header><nav></nav></header>
+<main></main>
+<footer></footer>
+<script>
+// The smallest page that behaves like the patched portal UI as far as scripts/ui_smoke.py can tell: a navigation with
+// aria-current, tabs with aria-selected (one of them disabled), a loading state, data read from the data location named
+// in config.json, the data version in the footer, a prompt to reload when another release is live (found by a timer and
+// when the tab becomes visible again) and a retry when the data location cannot be read.
+// FLAWS switches on one defect per test.
+const FLAWS = /*FLAWS*/{}/*END*/;
+const PAGES = ["首頁", "分頁頁", "資料頁"];
+const FILES = ["data/catalog.json", "data/lifecycle.json", "data/sources.json"];  // each page reads a file of its own
+const el = (tag, attrs = {}, text = "") => { const e = document.createElement(tag); for (const k in attrs) e.setAttribute(k, attrs[k]); e.textContent = text; return e; };
+const main = document.querySelector("main"), nav = document.querySelector("nav"), footer = document.querySelector("footer");
+// (the text mentions loading on purpose: only a placeholder counts as "still loading", not a sentence about it)
+const filler = (what) => `${what}：這是測試用的頁面內容。資料還在載入中的時候會先顯示提示，載入失敗的話也會說明原因。`;
+let base = "", manifest = null, tab = 0;
+
+async function json(url, options = {}) { const r = await fetch(url, options); if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }
+const pointer = () => json(base + "manifest.json", { cache: "no-store" });
+async function data(path) {
+  const from = FLAWS.rereadsPointer ? await pointer() : manifest;  // the flaw: every file comes from whatever is live right now
+  const read = () => json(base + from.basePath + path, FLAWS.customHeader ? { headers: { "X-Portal": "1" } } : {});
+  // (newerWinsBut: the same flaw as newerWins for every file but one - the page that is checked first is fine)
+  if (!FLAWS.keepsFiles && !FLAWS.newerWins && !(FLAWS.newerWinsBut && path !== FLAWS.newerWinsBut)) return read();
+  // The flaws: a file that was read once is kept for the tab under its name alone (keepsFiles: a new release never shows),
+  // or it is replaced only by a release with a later id (newerWins: a rollback never shows).
+  const kept = JSON.parse(sessionStorage.getItem(path) || "null");
+  if (kept && (FLAWS.keepsFiles || kept.release.slice(0, 16) > manifest.releaseId.slice(0, 16))) return kept.doc;
+  const doc = await read();
+  sessionStorage.setItem(path, JSON.stringify({ release: manifest.releaseId, doc }));
+  return doc;
+}
+// One text of the file a page read, shown in full: what a visitor would see change when the data does.
+const noted = (doc) => ((doc.events || []).find(e => (e.notes || []).some(n => n.length >= 12)) || { notes: [""] }).notes.find(n => n.length >= 12) || "";
+const excerpt = (doc) => FLAWS.showsNoData ? "" : (doc.models && doc.models[0] && doc.models[0].summary) || (doc.sources && doc.sources[0] && doc.sources[0].title) || noted(doc);
+// (blankOthersAfterRollback: after a rollback the pages other than the first show neither the withdrawn text nor the original one)
+const elsewhere = (doc) => (FLAWS.blankOthersAfterRollback && manifest.source && manifest.source.kind === "rollback") ? "" : excerpt(doc);
+
+function route() {
+  const hash = location.hash.replace(/^#\/?/, "");
+  return hash === "" ? 0 : hash === "tabs" ? 1 : hash === "data" ? 2 : hash;
+}
+
+async function render() {
+  const r = route();
+  nav.replaceChildren(...PAGES.map((name, i) => {
+    const b = el("button", r === i ? { "aria-current": "page" } : {}, name);
+    b.onclick = () => { tab = 0; location.hash = "/" + ["", "tabs", "data"][i]; };
+    return b;
+  }));
+  main.replaceChildren(el("div", { role: "status" }, "載入中…"));
+  await new Promise((done) => setTimeout(done, 30));
+  if (r !== route()) return;
+  try {
+    const doc = await data(FILES[typeof r === "number" ? r : 0]);
+    // (followsLinks: whatever stands where an id belongs becomes part of the address that is asked for)
+    if (FLAWS.followsLinks && typeof r === "string" && r.startsWith("digest/")) {
+      await fetch(base + manifest.basePath + "data/digests/" + decodeURIComponent(r.slice(7)) + ".json").catch(() => null);
+    }
+    if (FLAWS.readsOwnSite) await fetch("data/catalog.json").catch(() => null);
+    if (FLAWS.readsBundledCopy) await fetch("assets/sources.json").catch(() => null);  // a copy of the data built into the site
+    if (r === 1) {
+      const tabs = el("div", { role: "tablist" });
+      ["甲", "乙"].forEach((name, i) => { const t = el("button", { role: "tab", "aria-selected": String(tab === i) }, name); t.onclick = () => { tab = i; render(); }; tabs.append(t); });
+      tabs.append(el("button", { role: "tab", "aria-selected": "false", disabled: "" }, "丙"));
+      if (FLAWS.brokenTab && tab === 1) return main.replaceChildren(tabs, el("div", { class: "page-error", role: "alert" }, "這個頁面無法顯示。"));
+      return main.replaceChildren(tabs, el("p", {}, filler(`分頁 ${tab + 1}`)), el("p", {}, elsewhere(doc)));
+    }
+    if (r === 2) {
+      if (FLAWS.stuckPage) return;  // stays on 載入中…
+      if (FLAWS.emptyPage) return main.replaceChildren();
+      if (FLAWS.consoleError) console.error("something broke while drawing the data page");
+      if (FLAWS.consoleErrorWithLink) console.error("Error: Minified React error #310; visit https://react.dev/errors/310 for the full message or use the non-minified dev environment for full errors.");
+      if (FLAWS.markedUpFailure) {  // the page could not use its data, and says so with markup inside the message
+        const box = el("div", { class: "notice" }, "載入失敗：");
+        box.append(el("code", {}, "sources.json 的格式不對"));
+        return main.replaceChildren(el("section", {}, ""), box);
+      }
+      return main.replaceChildren(el("p", {}, filler(`${Object.keys(doc).length} 個欄位`)), el("p", {}, elsewhere(doc)));
+    }
+    // (blankAfterRollback: after a rollback the page shows neither the withdrawn text nor the one that is live again)
+    const blank = FLAWS.blankAfterRollback && manifest.source && manifest.source.kind === "rollback";
+    main.replaceChildren(el("p", {}, filler(typeof r === "string" ? `路徑 ${r}` : "首頁")), el("p", {}, blank ? "" : excerpt(doc)));
+  } catch (e) {
+    main.replaceChildren(el("div", { role: "status" }, `載入失敗：${e.message}`));
+  }
+}
+
+function status(notice) {
+  const line = el("span", { class: "data-status", "data-release": manifest.releaseId }, `資料版本 ${manifest.releaseId}`);
+  const box = el("span", { class: "data-status-notice", role: "status" }, notice || "");
+  if (notice) {
+    const b = el("button", { class: "data-status-reload" }, "重新載入");
+    b.onclick = () => location.reload();
+    box.append(b);
+  }
+  line.append(box);
+  footer.replaceChildren(line);
+}
+
+async function check() {
+  if (FLAWS.neverNotices || !manifest) return;
+  const latest = await pointer().catch(() => null);
+  if (!latest) return;
+  if (latest.releaseId !== manifest.releaseId) status("有新的資料版本");
+  else if (!FLAWS.stalePrompt) status("");
+}
+
+async function start(failedBefore) {
+  try {
+    base = (await json("config.json", { cache: "no-store" })).dataBaseUrl;
+    manifest = await pointer();
+    status(failedBefore ? "資料已經可以讀取" : "");
+  } catch (e) {
+    // (the flaws: a message that does not say what happened, next to a legend that happens to mention the code;
+    //  and the address that was tried - access token included - shown on the page)
+    const message = FLAWS.vagueRefusal ? "目前無法顯示資料。" : `無法讀取資料：${e.message}。會自動再試。`;
+    footer.replaceChildren(el("span", { class: "data-status data-status-error", role: "alert" }, message));
+    if (FLAWS.vagueRefusal) footer.append(el("small", {}, "狀態碼說明：403 表示存取被拒、404 表示找不到。"));
+    if (!failedBefore) main.replaceChildren(el("div", { role: "status" }, `載入失敗：${e.message}` + (FLAWS.showsAddress ? `（${base}manifest.json）` : "")));
+    // (more flaws: the address that was tried - token included - where no text of the page shows it)
+    if (FLAWS.addressInTitle) document.title = `讀不到 ${base}manifest.json`;
+    if (FLAWS.addressInTooltip) footer.firstChild.setAttribute("title", `${base}manifest.json`);
+    if (FLAWS.addressInConsole) console.warn(`could not read ${base}manifest.json`);
+    if (!FLAWS.noRetry) setTimeout(() => start(true), 15000);
+    return;
+  }
+  if (failedBefore) return;  // the page that was opened while the data could not be read stays as it is, until it is reloaded
+  addEventListener("hashchange", render);
+  if (!FLAWS.noEvent) document.addEventListener("visibilitychange", check);
+  if (!FLAWS.noTimer) setInterval(check, 5 * 60 * 1000);
+  render();
+}
+start(false);
+</script>
+</body>
+</html>

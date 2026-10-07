@@ -1,0 +1,183 @@
+"""Read-only view of the portal's data files (schema + data/*.json).
+
+The agent only ever *reads* portal data.  Sources, in order of preference:
+
+* ``s3://bucket/prefix/``  -- the portal data the UI is served from.  When ``manifest.json`` at that location is a
+  release pointer (written by the publishing pipeline, see ``pipeline/``), the release it names is read
+  (``releases/<id>/schema`` and ``releases/<id>/data``); otherwise the files are expected directly under the prefix
+  (a copy made by ``scripts/sync_portal_data.py``);
+* a local directory       -- the same two layouts on disk: a pipeline data folder, or a checkout of the portal repo;
+* ``bundled``             -- the snapshot shipped with the agent (a SAMPLE until you run
+  ``scripts/sync_portal_data.py``); proposals made against it say so.
+
+``data/internal/`` (platform inventory) and ``runs/`` are never loaded: they may hold internal
+information and the research agent has no business editing them.
+"""
+
+from __future__ import annotations
+
+import copy
+import fnmatch
+import json
+import os
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+SCHEMA_PATH = "schema/llmops.schema.json"
+DATA_GLOBS = [
+    "data/sources.json", "data/catalog.json", "data/lifecycle.json", "data/litellm.json",
+    "data/requirements.json", "data/digests/*.json", "data/models/*.json",
+]
+BUNDLED_DIR = Path(__file__).parent / "snapshot"
+#: written next to the synced files by ``scripts/sync_portal_data.py``: which portal commit the copy came from
+SYNC_MANIFEST = "sync_manifest.json"
+#: written by the publishing pipeline at the root of the data location: names the immutable release in use
+RELEASE_POINTER = "manifest.json"
+RELEASE_POINTER_SCHEMA = "portal-manifest/v1"
+_RELEASE_BASE = re.compile(r"^releases/[A-Za-z0-9][A-Za-z0-9._-]{0,99}/\Z")
+
+
+def is_data_path(rel: str) -> bool:
+    return any(fnmatch.fnmatch(rel, g) for g in DATA_GLOBS)
+
+
+def sync_info(raw: Any) -> dict:
+    """The few fields of a ``sync_manifest.json`` worth carrying into a proposal (whitelisted, length-limited)."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key in ("commit", "syncedAt"):
+        if isinstance(raw.get(key), str) and raw[key]:
+            out[key] = raw[key][:40]
+    if isinstance(raw.get("dirty"), bool):
+        out["dirty"] = raw["dirty"]
+    return out
+
+
+def release_base(raw: Any) -> tuple[str, dict]:
+    """``(basePath, info)`` when ``raw`` is a release pointer, ``("", {})`` when it is anything else.
+
+    A pointer that names a release but is malformed raises: silently falling back to other files under the same
+    prefix could make the agent research against stale data.
+    """
+    if not isinstance(raw, dict) or raw.get("schema") != RELEASE_POINTER_SCHEMA:
+        return "", {}
+    base = raw.get("basePath")
+    if not isinstance(base, str) or not _RELEASE_BASE.match(base):
+        raise ValueError(f"{RELEASE_POINTER} names an invalid release path: {base!r}")
+    info: dict[str, Any] = {"releaseId": str(raw.get("releaseId") or base.split("/")[1])[:100]}
+    if isinstance(raw.get("publishedAt"), str) and raw["publishedAt"]:
+        info["publishedAt"] = raw["publishedAt"][:40]
+    return base, info
+
+
+@dataclass
+class PortalData:
+    schema: dict
+    docs: dict[str, Any]  # "data/lifecycle.json" -> parsed JSON
+    manifest: dict = field(default_factory=dict)
+
+    # ---- constructors ------------------------------------------------------------------
+    @classmethod
+    def from_dir(cls, root: str | os.PathLike) -> "PortalData":
+        top = Path(root)
+        base, info = "", {}
+        pointer = top / RELEASE_POINTER
+        if pointer.is_file():
+            base, info = release_base(json.loads(pointer.read_text(encoding="utf-8")))
+        root = top / base if base else top
+        schema = json.loads((root / SCHEMA_PATH).read_text(encoding="utf-8"))
+        docs: dict[str, Any] = {}
+        for path in sorted((root / "data").rglob("*.json")):
+            rel = path.relative_to(root).as_posix()
+            if is_data_path(rel):
+                docs[rel] = json.loads(path.read_text(encoding="utf-8"))
+        if base:
+            return cls(schema, docs, {"kind": "release", "source": str(top), **info})
+        manifest = {"kind": "portal-checkout", "source": str(root)}
+        mpath = root / "snapshot_manifest.json"
+        if mpath.exists():
+            manifest.update(json.loads(mpath.read_text(encoding="utf-8")))
+        return cls(schema, docs, manifest)
+
+    @classmethod
+    def from_mapping(cls, files: dict[str, Any], manifest: dict | None = None) -> "PortalData":
+        """``files`` maps relative paths ("schema/llmops.schema.json", "data/...") to parsed JSON."""
+        schema = files[SCHEMA_PATH]
+        docs = {k: v for k, v in files.items() if is_data_path(k)}
+        return cls(schema, docs, manifest or {"kind": "inline"})
+
+    @classmethod
+    def from_s3(cls, uri: str, client: Any = None) -> "PortalData":
+        import boto3
+
+        bucket, _, prefix = uri[len("s3://"):].partition("/")
+        prefix = prefix if prefix.endswith("/") or not prefix else prefix + "/"
+        s3 = client or boto3.client("s3")
+        files: dict[str, Any] = {}
+        sync: dict = {}
+        pager = s3.get_paginator("list_objects_v2")
+        base, info = "", {}
+        pointer = prefix + RELEASE_POINTER
+        for page in pager.paginate(Bucket=bucket, Prefix=pointer):
+            if any(obj["Key"] == pointer for obj in page.get("Contents", [])):
+                base, info = release_base(json.loads(s3.get_object(Bucket=bucket, Key=pointer)["Body"].read()))
+                break
+        top, prefix = prefix, prefix + base  # everything below is read from the release (or from the flat copy)
+        for page in pager.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                rel = obj["Key"][len(prefix):]
+                if rel == SCHEMA_PATH or is_data_path(rel):
+                    body = s3.get_object(Bucket=bucket, Key=obj["Key"])["Body"].read()
+                    files[rel] = json.loads(body)
+                elif rel == SYNC_MANIFEST:
+                    try:
+                        sync = sync_info(json.loads(s3.get_object(Bucket=bucket, Key=obj["Key"])["Body"].read()))
+                    except ValueError:
+                        sync = {}  # optional metadata: a malformed manifest must not stop a run
+        if SCHEMA_PATH not in files:
+            raise FileNotFoundError(f"s3://{bucket}/{prefix}{SCHEMA_PATH} not found")
+        if base:
+            return cls.from_mapping(files, {"kind": "release", "source": f"s3://{bucket}/{top}", **info})
+        return cls.from_mapping(files, {"kind": "s3", "source": uri, **sync})
+
+    @classmethod
+    def load(cls, location: str = "bundled") -> "PortalData":
+        if location in ("", "bundled"):
+            data = cls.from_dir(BUNDLED_DIR)
+            return data
+        if location.startswith("s3://"):
+            return cls.from_s3(location)
+        return cls.from_dir(location)
+
+    # ---- helpers -----------------------------------------------------------------------
+    def clone(self) -> "PortalData":
+        return PortalData(self.schema, copy.deepcopy(self.docs), dict(self.manifest))
+
+    @property
+    def sources(self) -> list[dict]:
+        return list(self.docs.get("data/sources.json", {}).get("sources", []))
+
+    def source_by_id(self) -> dict[str, dict]:
+        return {s["id"]: s for s in self.sources}
+
+    def summary(self) -> dict:
+        lc = self.docs.get("data/lifecycle.json", {})
+        cat = self.docs.get("data/catalog.json", {})
+        digests = sorted(k for k in self.docs if k.startswith("data/digests/"))
+        return {
+            "manifest": self.manifest,
+            "sources": len(self.sources),
+            "models": [m.get("id") for m in cat.get("models", [])],
+            "lifecycleEvents": len(lc.get("events", [])),
+            "lifecycleAsOf": lc.get("asOf"),
+            "catalogAsOf": cat.get("asOf"),
+            "digests": [Path(d).stem for d in digests],
+            "deepDives": sorted(Path(k).stem for k in self.docs if k.startswith("data/models/")),
+        }
+
+    @property
+    def is_sample(self) -> bool:
+        return self.manifest.get("kind") == "sample"

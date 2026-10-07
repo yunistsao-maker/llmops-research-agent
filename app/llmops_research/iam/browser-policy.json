@@ -1,0 +1,17 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AgentCoreBrowserForJavaScriptRenderedPages",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock-agentcore:StartBrowserSession",
+        "bedrock-agentcore:GetBrowserSession",
+        "bedrock-agentcore:UpdateBrowserStream",
+        "bedrock-agentcore:ConnectBrowserAutomationStream",
+        "bedrock-agentcore:StopBrowserSession"
+      ],
+      "Resource": "arn:aws:bedrock-agentcore:*:aws:browser/aws.browser.v1"
+    }
+  ]
+}

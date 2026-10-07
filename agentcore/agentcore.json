@@ -1,0 +1,96 @@
+{
+  "$schema": "https://schema.agentcore.aws.dev/v1/agentcore.json",
+  "name": "LlmopsResearch",
+  "version": 1,
+  "managedBy": "CDK",
+  "tags": {
+    "agentcore:created-by": "agentcore-cli",
+    "agentcore:project-name": "LlmopsResearch"
+  },
+  "runtimes": [
+    {
+      "name": "llmops_research",
+      "description": "Researches public sources and returns validated update proposals for the LLMOps portal data",
+      "build": "CodeZip",
+      "entrypoint": "main.py",
+      "codeLocation": "app/llmops_research/",
+      "runtimeVersion": "PYTHON_3_14",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP",
+      "envVars": [
+        {
+          "name": "MODEL_PROVIDER",
+          "value": "bedrock"
+        },
+        {
+          "name": "MODEL_ID",
+          "value": "global.anthropic.claude-sonnet-5-5"
+        },
+        {
+          "name": "WEB_SEARCH_GATEWAY_NAME",
+          "value": "ResearchSearch"
+        },
+        {
+          "name": "ENABLE_BROWSER",
+          "value": "false"
+        },
+        {
+          "name": "MAX_SEARCHES",
+          "value": "30"
+        },
+        {
+          "name": "MAX_FETCHES",
+          "value": "40"
+        },
+        {
+          "name": "MAX_RUNTIME_SECONDS",
+          "value": "1500"
+        }
+      ],
+      "tags": {
+        "app": "llmops-research"
+      },
+      "lifecycleConfiguration": {
+        "idleRuntimeSessionTimeout": 900,
+        "maxLifetime": 3600
+      }
+    }
+  ],
+  "memories": [],
+  "knowledgeBases": [],
+  "credentials": [],
+  "evaluators": [],
+  "onlineEvalConfigs": [],
+  "agentCoreGateways": [
+    {
+      "name": "ResearchSearch",
+      "protocolType": "MCP",
+      "description": "Managed web search for the LLMOps research agent",
+      "targets": [
+        {
+          "name": "WebSearch",
+          "targetType": "connector",
+          "connectorId": "web-search",
+          "configurations": [
+            {
+              "name": "WebSearch",
+              "description": "",
+              "parameterValues": {},
+              "parameterOverrides": []
+            }
+          ]
+        }
+      ],
+      "authorizerType": "AWS_IAM",
+      "enableSemanticSearch": false,
+      "exceptionLevel": "NONE"
+    }
+  ],
+  "policyEngines": [],
+  "configBundles": [],
+  "abTests": [],
+  "harnesses": [],
+  "datasets": [],
+  "capacityProviders": [],
+  "payments": []
+}

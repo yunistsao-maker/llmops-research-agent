@@ -1,0 +1,279 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  LLMOps portal data plane: a private S3 bucket (portal/ = what the UI reads, research/ = what the agent writes,
+  pipeline/ = publisher state), a read-only CloudFront distribution in front of portal/, and the managed policy for the
+  AgentCore runtime role. Deploy this first; infra/pipeline.yaml adds the automation.
+
+Parameters:
+  BucketName:
+    Type: String
+    Default: ""
+    Description: Optional fixed bucket name. Empty = CloudFormation picks one.
+  DataAccessToken:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^none$|^[A-Za-z0-9_-]{16,64}$"
+    ConstraintDescription: empty, "none", or 16-64 characters of A-Z a-z 0-9 _ -
+    Description: >-
+      Path segment a request must start with (https://<distribution>/<token>/manifest.json), so the data is not
+      readable by anyone who merely learns the distribution's domain name. Empty = use this stack's unique id.
+      Recommended: your own random value (openssl rand -hex 16). "none" = no token (public data).
+  AllowedOrigins:
+    Type: CommaDelimitedList
+    Default: "*"
+    Description: >-
+      Origins whose pages may read the data from a browser (CORS), e.g. https://main.d1234.amplifyapp.com.
+      "*" allows any page; the token above (or a WAF) is what actually limits access. Keep "*" when the UI has more
+      than one address (e.g. two branches of one Amplify app): with a list, a browser may reuse a file it cached for
+      one of them and refuse it for the other.
+  WebAclArn:
+    Type: String
+    Default: ""
+    Description: Optional AWS WAF web ACL (scope CLOUDFRONT, created in us-east-1), e.g. an IP allow list for the office network.
+  PriceClass:
+    Type: String
+    Default: PriceClass_200
+    AllowedValues: [PriceClass_100, PriceClass_200, PriceClass_All]
+    Description: CloudFront edge locations to use (PriceClass_200 includes Asia).
+  ResultRetentionDays:
+    Type: Number
+    Default: 365
+    MinValue: 30
+    Description: >-
+      How long the agent's research records (research/runs/*, research/proposals/*) are kept. What was published stays
+      in each release's release.json for good.
+
+Conditions:
+  NamedBucket: !Not [!Equals [!Ref BucketName, ""]]
+  OpenData: !Equals [!Ref DataAccessToken, "none"]
+  TokenRequired: !Not [!Condition OpenData]
+  UseStackToken: !Equals [!Ref DataAccessToken, ""]
+  HasWebAcl: !Not [!Equals [!Ref WebAclArn, ""]]
+
+Resources:
+  DataBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !If [NamedBucket, !Ref BucketName, !Ref "AWS::NoValue"]
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-research-records
+            Status: Enabled
+            Prefix: research/
+            ExpirationInDays: !Ref ResultRetentionDays
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+          # Releases are immutable and small, so they are kept (a rollback needs them). Only the superseded versions of the
+          # few mutable objects (portal/manifest.json, pipeline/pending/...) and abandoned uploads are cleaned up.
+          - Id: expire-old-versions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 180
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  DataBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DataBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt DataBucket.Arn
+              - !Sub "${DataBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+          - Sid: CloudFrontReadsPortalData
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub "${DataBucket.Arn}/portal/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${DataDistribution}"
+          # so that a missing object can be reported as "not found" (S3 answers 403 to a caller that may not list)
+          - Sid: CloudFrontListsPortalData
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:ListBucket
+            Resource: !GetAtt DataBucket.Arn
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${DataDistribution}"
+              StringLike:
+                s3:prefix: "portal/*"
+
+  # Attach this to the runtime role: agentcore.json -> runtimes[0].additionalPolicies: ["<RuntimeDataPolicyArn>"]
+  RuntimeDataPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: LLMOps research agent - read portal data, write research results
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ReadPortalData
+            Effect: Allow
+            Action: s3:GetObject
+            Resource: !Sub "${DataBucket.Arn}/portal/*"
+          - Sid: ListPortalData
+            Effect: Allow
+            Action: s3:ListBucket
+            Resource: !GetAtt DataBucket.Arn
+            Condition:
+              StringLike:
+                s3:prefix: ["portal/*", "portal"]
+          - Sid: WriteResults
+            Effect: Allow
+            Action: s3:PutObject
+            Resource: !Sub "${DataBucket.Arn}/research/*"
+          # The agent's loader never opens these; the deny makes that a property of the role, not only of the code.
+          - Sid: NeverReadInternalInventoryOrTestResults
+            Effect: Deny
+            Action: s3:GetObject
+            Resource:
+              - !Sub "${DataBucket.Arn}/portal/releases/*/data/internal/*"
+              - !Sub "${DataBucket.Arn}/portal/releases/*/runs/*"
+
+  # ------------------------------------------------------------------ read-only delivery of portal/ to the UI
+  DataOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-data"
+        Description: CloudFront signs its requests to the private data bucket
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  DataResponseHeaders:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${AWS::StackName}-data"
+        Comment: CORS for the portal UI and basic hardening for JSON responses
+        CorsConfig:
+          AccessControlAllowCredentials: false
+          AccessControlAllowHeaders:
+            Items: ["*"]
+          AccessControlAllowMethods:
+            Items: [GET, HEAD, OPTIONS]
+          AccessControlAllowOrigins:
+            Items: !Ref AllowedOrigins
+          AccessControlMaxAgeSec: 600
+          OriginOverride: true
+        SecurityHeadersConfig:
+          ContentTypeOptions:
+            Override: true
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 31536000
+            IncludeSubdomains: false
+            Override: true
+
+  # Requests must start with /<token>/; the token is removed before the request goes to S3.
+  DataTokenFunction:
+    Type: AWS::CloudFront::Function
+    Condition: TokenRequired
+    Properties:
+      Name: !Sub "${AWS::StackName}-data-token"
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Require the access token as the first path segment
+        Runtime: cloudfront-js-2.0
+      FunctionCode: !Sub
+        - |
+          function handler(event) {
+            var request = event.request;
+            var prefix = '/${Token}/';
+            if (request.uri.indexOf(prefix) !== 0) {
+              // readable by any page (it carries no data), so that a browser shows "HTTP 403" instead of an opaque network error
+              return { statusCode: 403, statusDescription: 'Forbidden',
+                       headers: { 'cache-control': { value: 'no-store' }, 'access-control-allow-origin': { value: '*' } } };
+            }
+            request.uri = request.uri.substring(prefix.length - 1);
+            return request;
+          }
+        - Token: !If [UseStackToken, !Select [2, !Split ["/", !Ref "AWS::StackId"]], !Ref DataAccessToken]
+
+  DataDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: LLMOps portal data (read-only)
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: !Ref PriceClass
+        WebACLId: !If [HasWebAcl, !Ref WebAclArn, !Ref "AWS::NoValue"]
+        Origins:
+          - Id: portal-data
+            DomainName: !GetAtt DataBucket.RegionalDomainName
+            OriginPath: /portal
+            OriginAccessControlId: !GetAtt DataOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: portal-data
+          ViewerProtocolPolicy: https-only
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          # Managed-CachingOptimized: follows the objects' Cache-Control (releases: immutable for a year; manifest.json: no-cache)
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ResponseHeadersPolicyId: !Ref DataResponseHeaders
+          FunctionAssociations: !If
+            - TokenRequired
+            - - EventType: viewer-request
+                FunctionARN: !GetAtt DataTokenFunction.FunctionMetadata.FunctionARN
+            - !Ref "AWS::NoValue"
+
+Outputs:
+  DataBucketName:
+    Value: !Ref DataBucket
+  PortalDataUri:
+    Description: >-
+      Set the runtime's PORTAL_DATA_URI to this. The publishing pipeline keeps manifest.json and releases/ here;
+      create the first release with scripts/portalctl.py bootstrap.
+    Value: !Sub "s3://${DataBucket}/portal/"
+  OutputUri:
+    Description: Set the runtime's OUTPUT_URI to this (research/runs/<runId>.json and research/proposals/<id>.json are written here)
+    Value: !Sub "s3://${DataBucket}/research/"
+  PipelineStateUri:
+    Description: Where proposals that wait for approval are kept (portalctl --state)
+    Value: !Sub "s3://${DataBucket}/pipeline/"
+  RuntimeDataPolicyArn:
+    Description: Add to the runtime's additionalPolicies in agentcore/agentcore.json
+    Value: !Ref RuntimeDataPolicy
+  DataDistributionId:
+    Value: !Ref DataDistribution
+  DataDistributionDomainName:
+    Value: !GetAtt DataDistribution.DomainName
+  DataBaseUrl:
+    Description: What the UI reads from - put it in the UI's config.json as dataBaseUrl (it contains the access token, treat it like a shared link)
+    Value: !If
+      - TokenRequired
+      - !Sub
+        - "https://${DataDistribution.DomainName}/${Token}/"
+        - Token: !If [UseStackToken, !Select [2, !Split ["/", !Ref "AWS::StackId"]], !Ref DataAccessToken]
+      - !Sub "https://${DataDistribution.DomainName}/"

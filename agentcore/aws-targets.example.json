@@ -1,0 +1,8 @@
+[
+  {
+    "name": "default",
+    "description": "Tokyo (AgentCore Runtime + Gateway web-search connector are both available in ap-northeast-1)",
+    "account": "123456789012",
+    "region": "ap-northeast-1"
+  }
+]

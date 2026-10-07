@@ -1,0 +1,733 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  LLMOps portal update pipeline: a Step Functions state machine that starts a research run on the AgentCore runtime,
+  waits for the result, validates and publishes it to the data bucket as a new release, and notifies. Started on a
+  weekly schedule and on demand. Needs the data plane stack (infra/data-plane.yaml) and the deployed runtime.
+
+Parameters:
+  DataBucketName:
+    Type: String
+    AllowedPattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+    Description: DataBucketName output of the data plane stack.
+  AgentRuntimeArn:
+    Type: String
+    AllowedPattern: "^arn:aws[a-z-]*:bedrock-agentcore:[a-z0-9-]+:[0-9]{12}:runtime/[A-Za-z0-9_-]+$"
+    Description: ARN of the deployed AgentCore runtime (agentcore status).
+  AgentQualifier:
+    Type: String
+    Default: ""
+    Description: Optional runtime endpoint name (empty = DEFAULT).
+  CodeBucket:
+    Type: String
+    Description: Bucket that holds the Lambda bundle (printed by scripts/build_lambdas.py --upload).
+  CodeKey:
+    Type: String
+    Description: Key of the Lambda bundle (printed by scripts/build_lambdas.py --upload).
+  PublishMode:
+    Type: String
+    Default: review
+    AllowedValues: [auto, review]
+    Description: >-
+      review (the default) = every proposal waits for a person's approval.
+      auto = what a program can check goes live on its own - new records and notes, and dates, numbers and versions
+      that are literally in a cited quote about the right model; every other change still waits for approval.
+  AutoMaxOps:
+    Type: Number
+    Default: 60
+    MinValue: 1
+    MaxValue: 500
+    Description: In auto mode, a proposal with more operations than this waits for approval.
+  AutoAllowRemove:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: In auto mode, may a proposal that removes records go live without approval?
+  ScheduleExpression:
+    Type: String
+    Default: cron(0 9 ? * MON *)
+    Description: When the scheduled update runs (EventBridge Scheduler syntax; default every Monday 09:00 in ScheduleTimezone).
+  ScheduleTimezone:
+    Type: String
+    Default: Asia/Taipei
+  ScheduleState:
+    Type: String
+    Default: ENABLED
+    AllowedValues: [ENABLED, DISABLED]
+    Description: DISABLED keeps everything deployed but only runs on demand.
+  ScheduleRequest:
+    Type: String
+    Default: '{"kind":"weekly"}'
+    Description: The research request the schedule sends (a JSON object, the same payload the agent accepts).
+  NotificationEmail:
+    Type: String
+    Default: ""
+    Description: Optional e-mail address subscribed to the notifications (you must confirm the subscription e-mail).
+  ResearchTimeoutSeconds:
+    Type: Number
+    Default: 2400
+    MinValue: 300
+    MaxValue: 3300
+    Description: >-
+      How long to wait for a research run before the execution fails. Keep it above the runtime's MAX_RUNTIME_SECONDS
+      (1500 by default); the state machine itself gives up after 75 minutes.
+  PortalUrl:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^https://[^\\s?#]+$"
+    ConstraintDescription: empty, or an https:// address without a query string
+    Description: >-
+      Optional - address of the portal UI (for example the Amplify URL); notifications mention it so people can open
+      the portal. Do not put the data location's URL here: that one contains the access token.
+  LogRetentionDays:
+    Type: Number
+    Default: 90
+    AllowedValues: [7, 14, 30, 60, 90, 180, 365, 400, 731]
+  PermissionsBoundaryArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^arn:aws[a-z-]*:iam::[0-9]{12}:policy/.+$"
+    Description: >-
+      Optional - IAM permissions boundary to attach to every role this stack creates (many company accounts only allow
+      roles to be created with one).
+
+Conditions:
+  HasEmail: !Not [!Equals [!Ref NotificationEmail, ""]]
+  HasBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
+
+Resources:
+  # ------------------------------------------------------------------ notifications
+  NotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: LLMOps portal
+
+  NotificationEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasEmail
+    Properties:
+      TopicArn: !Ref NotificationTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  # ------------------------------------------------------------------ step 1: start the research run
+  StartResearchLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-start-research"
+      RetentionInDays: !Ref LogRetentionDays
+
+  StartResearchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref "AWS::NoValue"]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: start-research
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt StartResearchLogGroup.Arn
+              - Sid: InvokeTheResearchAgent
+                Effect: Allow
+                Action: bedrock-agentcore:InvokeAgentRuntime
+                Resource:
+                  - !Ref AgentRuntimeArn
+                  - !Sub "${AgentRuntimeArn}/runtime-endpoint/*"
+
+  StartResearchFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: StartResearchLogGroup
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-start-research"
+      Description: Starts a background research run on the AgentCore runtime
+      Runtime: python3.13
+      Architectures: [arm64]
+      Handler: portal_pipeline.handlers.start_research
+      Timeout: 120
+      MemorySize: 256
+      Role: !GetAtt StartResearchRole.Arn
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+      Environment:
+        Variables:
+          AGENT_RUNTIME_ARN: !Ref AgentRuntimeArn
+          AGENT_QUALIFIER: !Ref AgentQualifier
+          DATA_BUCKET: !Ref DataBucketName
+          RESEARCH_TIMEOUT_SECONDS: !Ref ResearchTimeoutSeconds
+
+  # ------------------------------------------------------------------ step 2: wait for the result
+  CheckResearchLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-check-research"
+      RetentionInDays: !Ref LogRetentionDays
+
+  CheckResearchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref "AWS::NoValue"]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: read-research-results
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt CheckResearchLogGroup.Arn
+              - Sid: ReadRunRecords
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${DataBucketName}/research/runs/*"
+              # with ListBucket a result that is not there yet is "not found" rather than "access denied"
+              - Sid: SeeWhetherARunRecordExists
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${DataBucketName}"
+                Condition:
+                  StringLike:
+                    s3:prefix: "research/runs/*"
+
+  CheckResearchFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: CheckResearchLogGroup
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-check-research"
+      Description: Checks whether the research run has written its result
+      Runtime: python3.13
+      Architectures: [arm64]
+      Handler: portal_pipeline.handlers.check_research
+      Timeout: 30
+      MemorySize: 256
+      Role: !GetAtt CheckResearchRole.Arn
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+      Environment:
+        Variables:
+          DATA_BUCKET: !Ref DataBucketName
+
+  # ------------------------------------------------------------------ step 3: validate and publish
+  PublishLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-publish"
+      RetentionInDays: !Ref LogRetentionDays
+
+  PublishRole:
+    Type: AWS::IAM::Role
+    Properties:
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref "AWS::NoValue"]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: publish-portal-data
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt PublishLogGroup.Arn
+              - Sid: ReadResearchResults
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${DataBucketName}/research/*"
+              # the only principal that writes what the UI reads (a conditional put needs GetObject as well); nothing under
+              # portal/ is ever deleted: releases are immutable and the pointer is only replaced
+              - Sid: WriteReleasesAndPipelineState
+                Effect: Allow
+                Action: [s3:GetObject, s3:PutObject]
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::${DataBucketName}/portal/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${DataBucketName}/pipeline/*"
+              - Sid: RemovePendingProposalsOnceDecided
+                Effect: Allow
+                Action: s3:DeleteObject
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${DataBucketName}/pipeline/*"
+              - Sid: ListDataPrefixes
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${DataBucketName}"
+                Condition:
+                  StringLike:
+                    s3:prefix: ["portal/*", "pipeline/*", "research/*"]
+
+  PublishFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: PublishLogGroup
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-publish"
+      Description: Replays a proposal on the live data, validates it and publishes a new release (also approve, discard, rollback)
+      Runtime: python3.13
+      Architectures: [arm64]
+      Handler: portal_pipeline.handlers.publish
+      Timeout: 300
+      MemorySize: 1024
+      Role: !GetAtt PublishRole.Arn
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+      Environment:
+        Variables:
+          DATA_BUCKET: !Ref DataBucketName
+          PUBLISH_MODE: !Ref PublishMode
+          AUTO_MAX_OPS: !Ref AutoMaxOps
+          AUTO_ALLOW_REMOVE: !Ref AutoAllowRemove
+          PORTAL_URL: !Ref PortalUrl
+          STATE_MACHINE_ARN: !Sub "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:${AWS::StackName}-update"
+
+  # ------------------------------------------------------------------ failure reporting
+  ReportFailureLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-report-failure"
+      RetentionInDays: !Ref LogRetentionDays
+
+  ReportFailureRole:
+    Type: AWS::IAM::Role
+    Properties:
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref "AWS::NoValue"]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !GetAtt ReportFailureLogGroup.Arn
+
+  ReportFailureFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: ReportFailureLogGroup
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-report-failure"
+      Description: Turns a failed step into a readable notification
+      Runtime: python3.13
+      Architectures: [arm64]
+      Handler: portal_pipeline.handlers.report_failure
+      Timeout: 15
+      MemorySize: 256
+      Role: !GetAtt ReportFailureRole.Arn
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+
+  # ------------------------------------------------------------------ the state machine
+  StateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref "AWS::NoValue"]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: states.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref "AWS::AccountId"
+      Policies:
+        - PolicyName: run-the-steps
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !GetAtt StartResearchFunction.Arn
+                  - !GetAtt CheckResearchFunction.Arn
+                  - !GetAtt PublishFunction.Arn
+                  - !GetAtt ReportFailureFunction.Arn
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref NotificationTopic
+
+  UpdateStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub "${AWS::StackName}-update"
+      StateMachineType: STANDARD
+      RoleArn: !GetAtt StateMachineRole.Arn
+      DefinitionSubstitutions:
+        StartResearchFunctionArn: !GetAtt StartResearchFunction.Arn
+        CheckResearchFunctionArn: !GetAtt CheckResearchFunction.Arn
+        PublishFunctionArn: !GetAtt PublishFunction.Arn
+        ReportFailureFunctionArn: !GetAtt ReportFailureFunction.Arn
+        NotificationTopicArn: !Ref NotificationTopic
+      # Every Lambda step takes the whole state and returns the new state (see pipeline/portal_pipeline/handlers.py).
+      Definition:
+        Comment: "LLMOps portal update: research on AgentCore, validate and publish to S3, notify"
+        StartAt: Init
+        TimeoutSeconds: 4500
+        States:
+          Init:
+            Type: Pass
+            Parameters:
+              "input.$": "$"
+              "execution.$": "$$.Execution.Id"
+            Next: Route
+          # {"action": "approve" | "discard" | "rollback" | "publish", ...} skips the research
+          Route:
+            Type: Choice
+            Choices:
+              - Variable: "$.input.action"
+                IsPresent: true
+                Next: Publish
+            Default: StartResearch
+          StartResearch:
+            Type: Task
+            Resource: "arn:aws:states:::lambda:invoke"
+            Parameters:
+              FunctionName: "${StartResearchFunctionArn}"
+              "Payload.$": "$"
+            OutputPath: "$.Payload"
+            TimeoutSeconds: 150
+            # no Retry: starting twice would run (and bill) the research twice
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.error"
+                Next: ReportFailure
+            Next: WaitForResearch
+          WaitForResearch:
+            Type: Wait
+            Seconds: 60
+            Next: CheckResearch
+          CheckResearch:
+            Type: Task
+            Resource: "arn:aws:states:::lambda:invoke"
+            Parameters:
+              FunctionName: "${CheckResearchFunctionArn}"
+              "Payload.$": "$"
+            OutputPath: "$.Payload"
+            TimeoutSeconds: 60
+            # read-only and called dozens of times per research: a transient failure of one call must not end the run
+            Retry:
+              - ErrorEquals: ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException",
+                              "Lambda.Unknown", "Sandbox.Timedout", "States.Timeout"]
+                IntervalSeconds: 5
+                MaxAttempts: 3
+                BackoffRate: 2
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.error"
+                Next: ReportFailure
+            Next: ResearchDone
+          ResearchDone:
+            Type: Choice
+            Choices:
+              - Variable: "$.research.status"
+                StringEquals: running
+                Next: WaitForResearch
+              - Variable: "$.research.status"
+                StringEquals: accepted
+                Next: Publish
+            # no_proposal: nothing to publish, the check step wrote the message
+            Default: Notify
+          Publish:
+            Type: Task
+            Resource: "arn:aws:states:::lambda:invoke"
+            Parameters:
+              FunctionName: "${PublishFunctionArn}"
+              "Payload.$": "$"
+            OutputPath: "$.Payload"
+            TimeoutSeconds: 330
+            # Only errors raised before or around the invocation are retried (a proposal that is already live is recognised
+            # and not published twice). A time-out is not retried: an approval that half-ran needs a person to look.
+            Retry:
+              - ErrorEquals: ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.TooManyRequestsException"]
+                IntervalSeconds: 5
+                MaxAttempts: 3
+                BackoffRate: 2
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.error"
+                Next: ReportFailure
+            Next: Notify
+          Notify:
+            Type: Task
+            Resource: "arn:aws:states:::sns:publish"
+            Parameters:
+              TopicArn: "${NotificationTopicArn}"
+              "Subject.$": "$.notification.subject"
+              "Message.$": "$.notification.message"
+            # The step's result must not replace the state (the Outcome choice below reads it). A null ResultPath would
+            # say that, but CloudFormation rejects null values anywhere in a template - so the message id is kept instead.
+            ResultSelector:
+              "messageId.$": "$.MessageId"
+            ResultPath: "$.notified"
+            Retry:
+              - ErrorEquals: ["States.TaskFailed", "States.Timeout"]
+                IntervalSeconds: 5
+                MaxAttempts: 2
+                BackoffRate: 2
+            # A message that cannot be sent is a failed execution: the step before it may have published an update or
+            # put one on the waiting list, and without the message nobody knows. The alarm on failed executions is the
+            # only signal left, so the run must not end as a success.
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.notifyError"
+                Next: NotificationFailed
+            Next: Outcome
+          NotificationFailed:
+            Type: Fail
+            Error: PortalNotificationFailed
+            Cause: The notification could not be sent. The step before it did finish - an update may have been published or may be waiting for approval - so check `portalctl status` and `portalctl pending`; the result of that step and the SNS error are in the execution history.
+          # a refused update is a failed execution (it is what an operator looks for), everything else succeeded
+          Outcome:
+            Type: Choice
+            Choices:
+              - And:
+                  - Variable: "$.publish.status"
+                    IsPresent: true
+                  - Variable: "$.publish.status"
+                    StringEquals: rejected
+                Next: NotPublished
+            Default: Done
+          NotPublished:
+            Type: Fail
+            Error: PortalUpdateRejected
+            Cause: The update was validated and refused; the portal data is unchanged. The reasons are in the notification and in the output of the Publish step.
+          ReportFailure:
+            Type: Task
+            Resource: "arn:aws:states:::lambda:invoke"
+            Parameters:
+              FunctionName: "${ReportFailureFunctionArn}"
+              "Payload.$": "$"
+            OutputPath: "$.Payload"
+            TimeoutSeconds: 30
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.reportError"
+                Next: NotifyUnreported
+            Next: NotifyFailure
+          # The report could not be written: the function failed on this very state (an input no step can process), or
+          # it could not be called at all. A person is told all the same - with the one thing the state machine knows by
+          # itself, which execution it was. Nothing in this message comes from the state.
+          NotifyUnreported:
+            Type: Task
+            Resource: "arn:aws:states:::sns:publish"
+            Parameters:
+              TopicArn: "${NotificationTopicArn}"
+              Subject: "[LLMOps portal] FAILED: the failure report could not be written"
+              "Message.$": "States.Format('The portal update failed, and the step that writes the failure report failed as well - usually because the execution input (or the output of a step) holds something no step can process. Research and its checks never change the portal data; if the failing step was Publish, check the live version with portalctl status. The failing step and its error are in the history of this execution: {}', $$.Execution.Id)"
+            ResultSelector:
+              "messageId.$": "$.MessageId"
+            ResultPath: "$.notified"
+            Retry:
+              - ErrorEquals: ["States.TaskFailed", "States.Timeout"]
+                IntervalSeconds: 5
+                MaxAttempts: 2
+                BackoffRate: 2
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.notifyError"
+                Next: Failed
+            Next: Failed
+          NotifyFailure:
+            Type: Task
+            Resource: "arn:aws:states:::sns:publish"
+            Parameters:
+              TopicArn: "${NotificationTopicArn}"
+              "Subject.$": "$.notification.subject"
+              "Message.$": "$.notification.message"
+            ResultSelector:
+              "messageId.$": "$.MessageId"
+            ResultPath: "$.notified"
+            Retry:
+              - ErrorEquals: ["States.TaskFailed", "States.Timeout"]
+                IntervalSeconds: 5
+                MaxAttempts: 2
+                BackoffRate: 2
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.notifyError"
+                Next: Failed
+            Next: Failed
+          Failed:
+            Type: Fail
+            Error: PortalUpdateFailed
+            Cause: A step failed. Research and its checks never change the portal data; if the failing step was Publish, the data may or may not have been updated - check `portalctl status`. The failing step and its error are in the execution history.
+          Done:
+            Type: Succeed
+
+  # ------------------------------------------------------------------ weekly schedule
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref "AWS::NoValue"]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref "AWS::AccountId"
+      Policies:
+        - PolicyName: start-the-update
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: !Ref UpdateStateMachine
+
+  UpdateSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Description: Scheduled LLMOps portal update (research, validate, publish)
+      State: !Ref ScheduleState
+      ScheduleExpression: !Ref ScheduleExpression
+      ScheduleExpressionTimezone: !Ref ScheduleTimezone
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !Ref UpdateStateMachine
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: !Sub '{"request": ${ScheduleRequest}, "trigger": "schedule"}'
+        # Scheduler retries only when it could not start the execution at all (throttling, a service hiccup), so a
+        # retry cannot start a second research run; after an hour the week's run is given up.
+        RetryPolicy:
+          MaximumRetryAttempts: 3
+          MaximumEventAgeInSeconds: 3600
+
+  # ------------------------------------------------------------------ backstop: every execution that did not succeed is heard of
+  # A failed or refused update sends its own detailed message, so this alarm usually arrives as a second mail. It is here
+  # for the cases in which that message cannot exist: the time limit, an abort, an error no Catch can handle
+  # (States.Runtime, States.DataLimitExceeded), or a failure of the reporting steps themselves.
+  ExecutionProblemAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: >-
+        An LLMOps portal update execution did not succeed (failed, timed out or aborted). Normally a detailed message
+        with the reason was sent as well; if this alarm is all you received, the execution could not report itself:
+        open its history in Step Functions, and check the live version with scripts/portalctl.py status.
+      Metrics:
+        - Id: unsuccessful
+          Expression: failed + timedOut + aborted
+          Label: Executions that did not succeed
+        - Id: failed
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/States
+              MetricName: ExecutionsFailed
+              Dimensions:
+                - Name: StateMachineArn
+                  Value: !Ref UpdateStateMachine
+            Period: 300
+            Stat: Sum
+        - Id: timedOut
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/States
+              MetricName: ExecutionsTimedOut
+              Dimensions:
+                - Name: StateMachineArn
+                  Value: !Ref UpdateStateMachine
+            Period: 300
+            Stat: Sum
+        - Id: aborted
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/States
+              MetricName: ExecutionsAborted
+              Dimensions:
+                - Name: StateMachineArn
+                  Value: !Ref UpdateStateMachine
+            Period: 300
+            Stat: Sum
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref NotificationTopic
+
+  # ------------------------------------------------------------------ for the people who operate it
+  # Everything scripts/portalctl.py needs when it works through the state machine: start an action (run, approve,
+  # discard, rollback, pause, resume), wait for its result, and read what is live, what is waiting and what a research
+  # run found. It cannot write to the bucket: every change goes through an execution, which leaves a record and sends
+  # a message. Attach it to the users or roles of the people who approve and roll back.
+  OperatorPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Operate the LLMOps portal update pipeline with scripts/portalctl.py - start and watch executions, read the portal data, pending proposals and research results. No write access to the data.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: StartAndListUpdates
+            Effect: Allow
+            Action: [states:StartExecution, states:ListExecutions, states:DescribeStateMachine]
+            Resource: !Ref UpdateStateMachine
+          - Sid: WatchAnUpdate
+            Effect: Allow
+            Action: [states:DescribeExecution, states:GetExecutionHistory]
+            Resource: !Sub "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:${UpdateStateMachine.Name}:*"
+          - Sid: ReadPortalDataPendingProposalsAndResearchResults
+            Effect: Allow
+            Action: s3:GetObject
+            Resource:
+              - !Sub "arn:${AWS::Partition}:s3:::${DataBucketName}/portal/*"
+              - !Sub "arn:${AWS::Partition}:s3:::${DataBucketName}/pipeline/*"
+              - !Sub "arn:${AWS::Partition}:s3:::${DataBucketName}/research/*"
+          - Sid: ListThem
+            Effect: Allow
+            Action: s3:ListBucket
+            Resource: !Sub "arn:${AWS::Partition}:s3:::${DataBucketName}"
+            Condition:
+              StringLike:
+                s3:prefix: ["portal/*", "pipeline/*", "research/*"]
+
+Outputs:
+  StateMachineArn:
+    Description: Start an update with aws stepfunctions start-execution --state-machine-arn <this> (or scripts/portalctl.py run)
+    Value: !Ref UpdateStateMachine
+  OperatorPolicyArn:
+    Description: Attach this managed policy to the people who run, approve and roll back updates with scripts/portalctl.py
+    Value: !Ref OperatorPolicy
+  StateMachineConsole:
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/states/home?region=${AWS::Region}#/statemachines/view/${UpdateStateMachine}"
+  NotificationTopicArn:
+    Description: Subscribe e-mail addresses or chat integrations to this topic
+    Value: !Ref NotificationTopic
+  PublishMode:
+    Value: !Ref PublishMode
