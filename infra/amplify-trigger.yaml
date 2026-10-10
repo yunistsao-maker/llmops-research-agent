@@ -1,0 +1,68 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Rebuild the Amplify-hosted portal whenever an execution of the portal update pipeline succeeds (publish, approve,
+  rollback, ...). The Amplify build (llmops-portal amplify.yml) fetches the live release from the data location, so the
+  site picks up every new release without a commit to the portal repo.
+
+Parameters:
+  StateMachineArn:
+    Type: String
+    Description: The pipeline stack's StateMachineArn output.
+  AmplifyWebhookUrl:
+    Type: String
+    NoEcho: true
+    Description: Incoming webhook of the Amplify branch (aws amplify create-webhook); it carries a token.
+
+Resources:
+  # API destinations require a connection; the Amplify webhook authenticates with the token in its URL.
+  WebhookConnection:
+    Type: AWS::Events::Connection
+    Properties:
+      AuthorizationType: API_KEY
+      AuthParameters:
+        ApiKeyAuthParameters:
+          ApiKeyName: x-unused
+          ApiKeyValue: unused
+
+  WebhookDestination:
+    Type: AWS::Events::ApiDestination
+    Properties:
+      ConnectionArn: !GetAtt WebhookConnection.Arn
+      HttpMethod: POST
+      InvocationEndpoint: !Ref AmplifyWebhookUrl
+      InvocationRateLimitPerSecond: 1
+
+  InvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: invoke-webhook
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: events:InvokeApiDestination
+                Resource: !GetAtt WebhookDestination.Arn
+
+  OnPipelineSucceeded:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Start an Amplify build after a successful portal pipeline execution
+      EventPattern:
+        source: [aws.states]
+        detail-type: [Step Functions Execution Status Change]
+        detail:
+          status: [SUCCEEDED]
+          stateMachineArn: [!Ref StateMachineArn]
+      Targets:
+        - Id: amplify-webhook
+          Arn: !GetAtt WebhookDestination.Arn
+          RoleArn: !GetAtt InvokeRole.Arn
+          Input: "{}"
+          RetryPolicy: { MaximumRetryAttempts: 3 }
