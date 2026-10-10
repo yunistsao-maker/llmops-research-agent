@@ -1,0 +1,125 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Daily LLMOps portal research, staggered so each run starts from the release the previous one published:
+  AWS 09:00, Azure 09:15, Google Cloud 09:30, LiteLLM 09:45, digest 10:00 (Asia/Taipei). Each starts the pipeline's
+  state machine with a budgeted request; with PublishMode=auto what passes the gates is published and
+  llmops-portal-amplify-trigger rebuilds the site.
+
+Parameters:
+  StateMachineArn:
+    Type: String
+    Description: The pipeline stack's StateMachineArn output.
+  ScheduleState:
+    Type: String
+    Default: ENABLED
+    AllowedValues: [ENABLED, DISABLED]
+  ScheduleTimezone:
+    Type: String
+    Default: Asia/Taipei
+
+Resources:
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref "AWS::AccountId"
+      Policies:
+        - PolicyName: start-the-update
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: !Ref StateMachineArn
+
+  DailyAws:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Description: Daily portal research (Aws) at 09:00
+      State: !Ref ScheduleState
+      ScheduleExpression: "cron(0 9 * * ? *)"
+      ScheduleExpressionTimezone: !Ref ScheduleTimezone
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !Ref StateMachineArn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: "{\"request\": {\"kind\": \"focus\", \"focus\": [\"lifecycle\", \"pricing\", \"new-models\"], \"instruction\": \"Scope: Amazon Bedrock only. Check the Bedrock model lifecycle (active and legacy) pages, model cards, regions and pricing for every model in catalog.json with an AWS offering, plus models newly available on Bedrock since the period start. Stamping: list every portal file whose cited source pages you re-read in this run under `asOfFiles`, and set `lastVerified` to today on each catalog model whose offering you re-checked against an official page in this run. Do not write a digest.\", \"budget\": {\"searches\": 8, \"fetches\": 14, \"toolCalls\": 60}}, \"trigger\": \"schedule-aws\"}"
+        RetryPolicy:
+          MaximumRetryAttempts: 3
+          MaximumEventAgeInSeconds: 3600
+
+  DailyAzure:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Description: Daily portal research (Azure) at 09:15
+      State: !Ref ScheduleState
+      ScheduleExpression: "cron(15 9 * * ? *)"
+      ScheduleExpressionTimezone: !Ref ScheduleTimezone
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !Ref StateMachineArn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: "{\"request\": {\"kind\": \"focus\", \"focus\": [\"lifecycle\", \"pricing\", \"new-models\"], \"instruction\": \"Scope: Microsoft Azure only (Microsoft Foundry / Azure OpenAI). Check the model retirement schedule, model availability by region and pricing for every model in catalog.json with an Azure offering, plus models newly available on Foundry since the period start. Stamping: list every portal file whose cited source pages you re-read in this run under `asOfFiles`, and set `lastVerified` to today on each catalog model whose offering you re-checked against an official page in this run. Do not write a digest.\", \"budget\": {\"searches\": 8, \"fetches\": 14, \"toolCalls\": 60}}, \"trigger\": \"schedule-azure\"}"
+        RetryPolicy:
+          MaximumRetryAttempts: 3
+          MaximumEventAgeInSeconds: 3600
+
+  DailyGcp:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Description: Daily portal research (Gcp) at 09:30
+      State: !Ref ScheduleState
+      ScheduleExpression: "cron(30 9 * * ? *)"
+      ScheduleExpressionTimezone: !Ref ScheduleTimezone
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !Ref StateMachineArn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: "{\"request\": {\"kind\": \"focus\", \"focus\": [\"lifecycle\", \"pricing\", \"new-models\"], \"instruction\": \"Scope: Google Cloud only (Gemini Enterprise Agent Platform / Vertex AI). Check model versions and retirement / no-sooner-than dates, regions, quotas and pricing for every model in catalog.json with a Google Cloud offering, plus models newly available on Agent Platform since the period start. Stamping: list every portal file whose cited source pages you re-read in this run under `asOfFiles`, and set `lastVerified` to today on each catalog model whose offering you re-checked against an official page in this run. Do not write a digest.\", \"budget\": {\"searches\": 8, \"fetches\": 14, \"toolCalls\": 60}}, \"trigger\": \"schedule-gcp\"}"
+        RetryPolicy:
+          MaximumRetryAttempts: 3
+          MaximumEventAgeInSeconds: 3600
+
+  DailyLitellm:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Description: Daily portal research (Litellm) at 09:45
+      State: !Ref ScheduleState
+      ScheduleExpression: "cron(45 9 * * ? *)"
+      ScheduleExpressionTimezone: !Ref ScheduleTimezone
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !Ref StateMachineArn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: "{\"request\": {\"kind\": \"focus\", \"focus\": [\"litellm\"], \"instruction\": \"Scope: LiteLLM only. Quote the exact release row (version and date on the same line) and the exact advisory text that names each affected version. Stamping: list every portal file whose cited source pages you re-read in this run under `asOfFiles`, and set `lastVerified` to today on each catalog model whose offering you re-checked against an official page in this run. Do not write a digest.\", \"budget\": {\"searches\": 8, \"fetches\": 14, \"toolCalls\": 60}}, \"trigger\": \"schedule-litellm\"}"
+        RetryPolicy:
+          MaximumRetryAttempts: 3
+          MaximumEventAgeInSeconds: 3600
+
+  DailyDigest:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Description: Daily portal research (Digest) at 10:00
+      State: !Ref ScheduleState
+      ScheduleExpression: "cron(0 10 * * ? *)"
+      ScheduleExpressionTimezone: !Ref ScheduleTimezone
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !Ref StateMachineArn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: "{\"request\": {\"kind\": \"weekly\", \"focus\": [\"new-models\", \"regulatory\"], \"includeDigest\": true, \"instruction\": \"Write the digest for the reporting period. Earlier runs today (AWS, Azure, Google Cloud, LiteLLM) may already have published updates: summarise the portal changes of the period citing the existing source ids, re-reading pages only where an entry needs it. Then use the remaining budget on new models (incl. open-weight releases) and regulatory news in the period. Do not change catalog or lifecycle records except where a page you read states it.\", \"budget\": {\"searches\": 8, \"fetches\": 14, \"toolCalls\": 70}}, \"trigger\": \"schedule-digest\"}"
+        RetryPolicy:
+          MaximumRetryAttempts: 3
+          MaximumEventAgeInSeconds: 3600
