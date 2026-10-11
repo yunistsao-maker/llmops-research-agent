@@ -17,10 +17,20 @@ Parameters:
     Type: String
     Default: Asia/Taipei
 
+  PermissionsBoundaryArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^arn:aws[a-z-]*:iam::[0-9]{12}:policy/.+$"
+    Description: Optional - permissions boundary the account requires on new IAM roles (company / sandbox accounts).
+
+Conditions:
+  HasBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
+
 Resources:
   SchedulerRole:
     Type: AWS::IAM::Role
     Properties:
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref "AWS::NoValue"]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:

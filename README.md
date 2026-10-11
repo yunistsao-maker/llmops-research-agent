@@ -159,6 +159,9 @@ git -C ../llmops-portal checkout -- data               # 測完把 portal repo �
 
 ## 4. 部署到 AWS 帳號
 
+> 要部署到公司專用帳號／sandbox 帳號（並下架個人帳號的舊部署），照 [docs/migrate-to-dedicated-account.md](docs/migrate-to-dedicated-account.md)：
+> 每個指令都經過 `scripts/in_account.sh`，帳號不對就不執行。
+
 **前置**
 
 - AWS CLI v2 與憑證（要能建立 CloudFormation stack、IAM role／policy、S3、CloudFront、Lambda、Step Functions、EventBridge Scheduler、SNS、CloudWatch alarm）
