@@ -61,6 +61,21 @@ alias portalctl='uv run --with-requirements scripts/requirements.txt python scri
 
 **一週內沒有收到任何通知，就是排程或通知出了問題**：`portalctl executions` 看最近的執行。
 
+## 每天的「網站已更新」通知（ui-verify，選用）
+
+`infra/ui-verify.yaml` 部署之後，除了上面每次 execution 的通知，每天還會多一封確認**網站實際顯示今天的資料**的信
+（程式：`pipeline/portal_pipeline/ui_verify.py`，與 pipeline 同一個 Lambda bundle）：
+
+| 主旨 | 什麼時候 | 要做什麼 |
+| --- | --- | --- |
+| `Daily update live: <日期> (<releaseId>)` | 一天一次：某次 Amplify 部署之後，網站 `data/radar.json` 的版本是今天，而且 `data/manifest.json` 記錄的 release 等於資料位置上線中的 release | 不用處理；內文列出今天新增與 P0 的行動項目、今天各次研究的結果 |
+| `Daily update NOT complete: <日期>` | `DeadlineSchedule`（預設 11:30）時今天還沒有寄出上面那一封 | 內文列出缺什麼：Radar 還是舊日期（今天的 digest 沒發布：看 `portalctl pending`／`executions`）、release 不一致（Amplify 沒有重新 build）、網站讀不到 |
+| `UI build FAILED (job <id>)` | 每次 Amplify build 失敗 | Amplify console 看那個 job 的 log；網站維持上一次成功的版本 |
+
+「一天一次」靠 `pipeline/notified/ui-<日期>.json`（只能建立一次）。部署參數：`AmplifyAppId`、`AmplifyBranch`、`SiteUrl`（使用者打開的網址，不是資料位置）、
+`NotificationTopicArn`、`StateMachineArn`（選用，內文附今天的研究結果）、`SiteAuthSecretArn`（網站有 basic auth 時，Secrets Manager 裡的 `user:password`）。
+需要 portal 的 `tools/build_site.mjs` 在 `data/manifest.json` 寫入 `release` 與 `radarAsOf`（llmops-portal 2026-10-11 之後的版本）。
+
 ## 看狀態
 
 ```bash
