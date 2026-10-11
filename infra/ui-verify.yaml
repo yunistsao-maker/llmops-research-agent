@@ -1,0 +1,264 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Daily "the portal UI is updated" notification. After every Amplify deployment of the portal branch a function reads
+  the live site (index, data/manifest.json, data/radar.json) and the data location's pointer; the first time a day the
+  site shows today's merged Release Radar and the live release, it sends one "Daily update live" message to the
+  pipeline's SNS topic. A failed Amplify build is reported every time. A daily deadline check sends "Daily update NOT
+  complete" when that message has not gone out (silence is not success). Code: pipeline/portal_pipeline/ui_verify.py,
+  in the same Lambda bundle as the pipeline.
+
+Parameters:
+  DataBucketName:
+    Type: String
+    AllowedPattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+    Description: DataBucketName output of the data plane stack.
+  NotificationTopicArn:
+    Type: String
+    Description: NotificationTopicArn output of the pipeline stack.
+  StateMachineArn:
+    Type: String
+    Default: ""
+    Description: Optional - StateMachineArn output of the pipeline stack (the message then lists today's research runs).
+  CodeBucket:
+    Type: String
+    Description: Bucket that holds the Lambda bundle (scripts/build_lambdas.py --upload).
+  CodeKey:
+    Type: String
+    Description: Key of the Lambda bundle.
+  AmplifyAppId:
+    Type: String
+    AllowedPattern: "^[a-z0-9]{1,20}$"
+    Description: Amplify app id of the portal (aws amplify list-apps).
+  AmplifyBranch:
+    Type: String
+    Default: main
+  SiteUrl:
+    Type: String
+    AllowedPattern: "^https://[^\\s?#]+$"
+    Description: The branch URL people open (for example https://main.<appid>.amplifyapp.com). Not the data location's URL.
+  SiteAuthSecretArn:
+    Type: String
+    Default: ""
+    Description: Optional - Secrets Manager secret holding "user:password" when the branch has Amplify basic auth.
+  DeadlineSchedule:
+    Type: String
+    Default: cron(30 11 * * ? *)
+    Description: When to check that today's update reached the site (after the last daily research run; default 11:30).
+  ScheduleTimezone:
+    Type: String
+    Default: Asia/Taipei
+  LogRetentionDays:
+    Type: Number
+    Default: 90
+    AllowedValues: [7, 14, 30, 60, 90, 180, 365, 400, 731]
+  PermissionsBoundaryArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^arn:aws[a-z-]*:iam::[0-9]{12}:policy/.+$"
+
+Conditions:
+  HasBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
+  HasSecret: !Not [!Equals [!Ref SiteAuthSecretArn, ""]]
+  HasStateMachine: !Not [!Equals [!Ref StateMachineArn, ""]]
+
+Resources:
+  VerifyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref "AWS::NoValue"]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: verify
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource:
+                  - !GetAtt AmplifyEventLogGroup.Arn
+                  - !GetAtt DeadlineLogGroup.Arn
+              - Sid: ReadThePointer
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${DataBucketName}/portal/manifest.json"
+              - Sid: OneMessageADay
+                Effect: Allow
+                Action: [s3:GetObject, s3:PutObject]
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${DataBucketName}/pipeline/notified/*"
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${DataBucketName}"
+                Condition:
+                  StringLike:
+                    s3:prefix: ["portal/manifest.json", "pipeline/notified/*"]
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref NotificationTopicArn
+              - !If
+                - HasStateMachine
+                - Effect: Allow
+                  Action: states:ListExecutions
+                  Resource: !Ref StateMachineArn
+                - !Ref "AWS::NoValue"
+              - !If
+                - HasStateMachine
+                - Effect: Allow
+                  Action: states:DescribeExecution
+                  Resource: !Sub
+                    - "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:${Name}:*"
+                    - Name: !Select [6, !Split [":", !Ref StateMachineArn]]
+                - !Ref "AWS::NoValue"
+              - !If
+                - HasSecret
+                - Effect: Allow
+                  Action: secretsmanager:GetSecretValue
+                  Resource: !Ref SiteAuthSecretArn
+                - !Ref "AWS::NoValue"
+
+  AmplifyEventLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-on-deploy"
+      RetentionInDays: !Ref LogRetentionDays
+
+  DeadlineLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-deadline"
+      RetentionInDays: !Ref LogRetentionDays
+
+  OnDeployFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: AmplifyEventLogGroup
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-on-deploy"
+      Description: After an Amplify deployment, check the live portal and send the day's "Daily update live" message once
+      Runtime: python3.13
+      Architectures: [arm64]
+      Handler: portal_pipeline.ui_verify.on_amplify_event
+      Timeout: 60
+      MemorySize: 256
+      Role: !GetAtt VerifyRole.Arn
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref CodeKey }
+      Environment:
+        Variables:
+          SITE_URL: !Ref SiteUrl
+          TOPIC_ARN: !Ref NotificationTopicArn
+          DATA_URI: !Sub "s3://${DataBucketName}/portal/"
+          STATE_URI: !Sub "s3://${DataBucketName}/pipeline/"
+          STATE_MACHINE_ARN: !Ref StateMachineArn
+          SITE_AUTH_SECRET_ARN: !Ref SiteAuthSecretArn
+          TIMEZONE: !Ref ScheduleTimezone
+
+  DeadlineFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: DeadlineLogGroup
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-deadline"
+      Description: Daily - send "Daily update NOT complete" when today's update has not reached the portal
+      Runtime: python3.13
+      Architectures: [arm64]
+      Handler: portal_pipeline.ui_verify.deadline_check
+      Timeout: 60
+      MemorySize: 256
+      Role: !GetAtt VerifyRole.Arn
+      Code: { S3Bucket: !Ref CodeBucket, S3Key: !Ref CodeKey }
+      Environment:
+        Variables:
+          SITE_URL: !Ref SiteUrl
+          TOPIC_ARN: !Ref NotificationTopicArn
+          DATA_URI: !Sub "s3://${DataBucketName}/portal/"
+          STATE_URI: !Sub "s3://${DataBucketName}/pipeline/"
+          STATE_MACHINE_ARN: !Ref StateMachineArn
+          SITE_AUTH_SECRET_ARN: !Ref SiteAuthSecretArn
+          TIMEZONE: !Ref ScheduleTimezone
+
+  OnAmplifyDeployment:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Amplify deployments of the portal branch (succeeded or failed)
+      EventPattern:
+        source: [aws.amplify]
+        detail-type: [Amplify Deployment Status Change]
+        detail:
+          appId: [!Ref AmplifyAppId]
+          branchName: [!Ref AmplifyBranch]
+          jobStatus: [SUCCEED, FAILED]
+      Targets:
+        - Id: on-deploy
+          Arn: !GetAtt OnDeployFunction.Arn
+          RetryPolicy: { MaximumRetryAttempts: 3 }
+
+  OnAmplifyDeploymentPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref OnDeployFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt OnAmplifyDeployment.Arn
+
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref "AWS::NoValue"]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref "AWS::AccountId"
+      Policies:
+        - PolicyName: invoke-deadline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt DeadlineFunction.Arn
+
+  DailyDeadline:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Description: Check that today's portal update reached the site
+      ScheduleExpression: !Ref DeadlineSchedule
+      ScheduleExpressionTimezone: !Ref ScheduleTimezone
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt DeadlineFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        RetryPolicy: { MaximumRetryAttempts: 2, MaximumEventAgeInSeconds: 3600 }
+
+  VerifyErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The UI verification functions failed (no daily message could be produced)
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref DeadlineFunction
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref NotificationTopicArn]
+
+Outputs:
+  OnDeployFunctionArn:
+    Value: !GetAtt OnDeployFunction.Arn
+  DeadlineFunctionArn:
+    Value: !GetAtt DeadlineFunction.Arn
