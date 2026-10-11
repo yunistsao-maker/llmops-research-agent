@@ -1,3 +1,5 @@
+# SUPERSEDED by infra/daily-orchestrator.yaml (7 roles with skills, started by GitHub Actions): keep this stack DISABLED or delete
+# it, otherwise the research runs twice a day. Kept for deployments that still use it.
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   Daily LLMOps portal research, staggered so each run starts from the release the previous one published:
@@ -17,10 +19,20 @@ Parameters:
     Type: String
     Default: Asia/Taipei
 
+  PermissionsBoundaryArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^arn:aws[a-z-]*:iam::[0-9]{12}:policy/.+$"
+    Description: Optional - permissions boundary the account requires on new IAM roles (company / sandbox accounts).
+
+Conditions:
+  HasBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
+
 Resources:
   SchedulerRole:
     Type: AWS::IAM::Role
     Properties:
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref "AWS::NoValue"]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 ALLOWED_FILES = (
-    "data/catalog.json", "data/lifecycle.json", "data/litellm.json", "data/requirements.json",
+    "data/catalog.json", "data/lifecycle.json", "data/litellm.json", "data/requirements.json", "data/open-models.json",
 )
 EDITABLE_PATTERNS = (re.compile(r"^data/models/[A-Za-z0-9._-]+\.json\Z"),)
 #: array elements can be addressed by the value of one of these keys instead of their position (the first that matches)

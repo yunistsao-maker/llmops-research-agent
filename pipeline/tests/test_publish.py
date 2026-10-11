@@ -597,6 +597,7 @@ def test_what_the_live_data_holds_is_not_discarded_because_the_record_of_its_rel
     assert P.rollback(plane.data, actor="bob", reason="先撤回", now=T2).status == "rolled_back"
     assert P.publish_proposal(plane.data, record, policy=review, control=plane.control, now=T2).status == "pending"
     monkeypatch.setattr(R, "HISTORY_LIMIT", 1)  # (a pointer keeps its last 60 releases: here, the last one)
+    monkeypatch.setattr(R, "VERSIONS_LIMIT", 1)  # (and the release of each of its last 7 days: here, today's)
     pushed = P.publish_tree(plane.data, corrected, base_release=base.release_id, actor="carol", note="同一個修正，手動發布",
                             now=T2 + dt.timedelta(hours=1))
     assert pushed.status == "published", pushed.reasons
@@ -1930,3 +1931,41 @@ def test_a_base_that_no_longer_exists_is_treated_as_unknown_and_says_so(plane):
     assert outcome.status == "rejected" and "20260101T000000Z-00000000 已經讀不到" in outcome.reasons[0]
     for bad in ("../../etc", "not-a-release", ""):
         assert P.publish_tree(plane.data, snapshot_tree(), base_release=bad, actor="eunice", now=T2).status == "rejected"
+
+
+def test_every_change_of_the_live_release_updates_the_day_s_version(plane):
+    base = plane.bootstrap()
+    agent = P.publish_proposal(plane.data, accepted_run(), control=plane.control, now=T1)
+    assert [(v["date"], v["releaseId"]) for v in live(plane).manifest["versions"]] == [("2026-10-02", agent.release_id)]
+    P.pause(plane.data, actor="eunice", reason="檢查", now=T1)  # rewriting the pointer for the flag keeps the versions
+    assert [v["releaseId"] for v in live(plane).manifest["versions"]] == [agent.release_id]
+    P.rollback(plane.data, actor="eunice", reason="日期有疑問", now=T2)
+    day = R.version_day(R.iso(T2))
+    assert (live(plane).manifest["versions"][0]["date"], live(plane).manifest["versions"][0]["releaseId"]) == (day, base.release_id)
+
+
+def test_every_change_to_the_open_weight_radar_waits_for_a_person():
+    from research.portal.diff import Change as C
+
+    added = P.Review("base", changes=[C("data/open-models.json", "/models/-", "added", None, {"id": "new-model"})])
+    signal = P.Review("base", changes=[C("data/open-models.json", "/models/glm-5-3/heat", "modified", "rising", "hit")])
+    stamped = P.Review("base", stamps=[C("data/open-models.json", "/asOf", "modified", "2026-10-11", "2026-10-12")])
+    for review in (added, signal, stamped):
+        reasons = P.holds({"ops": []}, P.Policy(allow_remove=True, max_ops=10**6), review)
+        assert any("data/open-models.json" in r and "由人確認" in r for r in reasons), reasons
+    assert "data/open-models.json" in R.PUBLISHABLE and R.publishable("data/open-models.json")
+
+
+def test_the_radar_editor_s_curation_suggestions_reach_the_approver():
+    from portal_pipeline import notify as N
+
+    proposal = {"id": "prop-1", "summary": "s", "ops": [], "checked": [
+        {"topic": "Bedrock lifecycle", "result": "no change"},
+        {"topic": "radar-curation", "result": "close：「把 Claude Sonnet 4 改到 Sonnet 5.5」已完成\n第二行"},
+        *({"topic": "radar-curation", "result": f"merge {i}"} for i in range(20)),
+    ]}
+    info = P.brief(proposal)
+    assert len(info["curation"]) == P.MAX_CURATION and info["curation"][0].startswith("close") and "\n" not in info["curation"][0]
+    text = N._proposal_block(info)
+    assert "Radar 整理建議" in text and "  - close：" in text and "no change" not in text
+    assert "curation" not in P.brief({"id": "prop-2", "ops": [], "checked": ["plain string"]})

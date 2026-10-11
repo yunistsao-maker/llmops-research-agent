@@ -223,6 +223,8 @@ def _proposal_block(p: Any) -> str:
          + f"、新來源 {ext(p.get('newSources', 0), 6)} 筆、引文 {ext(p.get('evidence', 0), 6)} 則") if counted else None,
         f"Digest {ext(p.get('digestId'), 40)}：{ext(p.get('digestHeadline'), 500)}" if p.get("digestId") else None,
         f"未能確認的項目：{ext(p.get('unverified'), 6)} 項（請在 portal 的「本期尚未驗證」核對）" if p.get("unverified") else None,
+        *(["Radar 整理建議（確認後由人寫進 portal repo 的 radar/curation.json）："]
+          + [f"  - {ext(s, 300)}" for s in p["curation"][:8]] if isinstance(p.get("curation"), list) and p["curation"] else []),
     )
 
 

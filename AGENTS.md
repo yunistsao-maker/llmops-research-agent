@@ -8,7 +8,8 @@ independent review found, what was done about it, and the limits that remain) be
 | --- | --- | --- |
 | Research agent (AgentCore Runtime) | `app/llmops_research/` (entrypoint `main.py`, logic in `research/`) | `cd app/llmops_research && uv run --extra dev python -m pytest tests` (`--live` adds real-web checks) |
 | Update pipeline (Step Functions + 4 Lambdas) and operator CLI | `pipeline/portal_pipeline/`, `scripts/` | `uv run --with-requirements pipeline/requirements-dev.txt python -m pytest pipeline/tests` |
-| Infrastructure | `infra/data-plane.yaml`, `infra/pipeline.yaml` | `uvx cfn-lint infra/*.yaml`; `pipeline/tests/test_infra.py`, `test_state_machine*.py` |
+| Infrastructure | `infra/data-plane.yaml`, `infra/pipeline.yaml`; daily run: `infra/daily-orchestrator.yaml`, `infra/github-oidc.yaml`, `.github/workflows/daily-research.yml` | `uvx cfn-lint infra/*.yaml`; `pipeline/tests/test_infra.py`, `test_state_machine*.py` |
+| Research roles and their skills | `app/llmops_research/research/skills.py` (`ROLES`), `app/llmops_research/skills/*/SKILL.md` | `app/llmops_research/tests/test_roles.py` (also checks the orchestrator and the workflow list the same roles) |
 | UI integration kit | `ui/files/`, `scripts/patch_ui.py`, `scripts/serve_data.py`, `scripts/ui_smoke.py`, `scripts/review_proposal.html` | `pipeline/tests/test_patch_ui.py`, `test_serve_data.py`, `test_ui_kit.py` (runs `dataSource.ts` with node); with Playwright: `test_ui_smoke.py`, `test_review_viewer.py`; `ui_smoke.py` against a built UI |
 
 Rules that are easy to break:
@@ -78,6 +79,11 @@ Rules that are easy to break:
 - `agentcore dev` reads env vars from `agentcore/.env.local`, not from the `envVars` in `agentcore.json`. Use `@aws/agentcore`
   (`npm i -g @aws/agentcore`), not the legacy Python starter-toolkit `agentcore`. The runtime's account-specific settings are written by
   `scripts/configure_agent.py`; the delivered `agentcore.json` contains none.
+- Skills (`app/llmops_research/skills/`) are trusted instructions packaged with the runtime; they are appended AFTER the hard rules and the
+  proposal format. A skill may say where to look and how to work, never that a rule, a gate or a tier does not apply. A new role needs its
+  skill, an entry in `skills.ROLES`, a step in `infra/daily-orchestrator.yaml` and the name in the workflow's list (test_roles.py checks all four).
+- The pointer's `versions` (one entry per Asia/Taipei day, the release live at the end of it, at most `VERSIONS_LIMIT`) is written only by
+  `releases.build_manifest`; the portal's build reads it to show one version per day.
 - User-facing text (CLI output, notifications, docs) is Traditional Chinese with English technical terms; code comments and identifiers are English.
 - Generic AgentCore CLI context follows.
 

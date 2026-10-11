@@ -40,7 +40,8 @@ def text(node) -> str:
 
 
 # ---------------------------------------------------------------------------------------------- lint
-@pytest.mark.parametrize("template", ["data-plane.yaml", "pipeline.yaml"])
+@pytest.mark.parametrize("template", ["data-plane.yaml", "pipeline.yaml", "daily-orchestrator.yaml", "github-oidc.yaml",
+                                      "daily-schedules.yaml", "amplify-trigger.yaml", "ui-verify.yaml"])
 def test_templates_pass_cfn_lint(template):
     if not shutil.which("cfn-lint"):
         pytest.skip("cfn-lint is not installed")
@@ -381,3 +382,44 @@ def test_the_token_parameter_only_accepts_url_safe_values():
         assert pattern.match(ok), ok
     for bad in ("short", "has/slash/in-it-0123456789", "has'quote-0123456789abcdef", "spa ce-0123456789abcdef", "x" * 65):
         assert not pattern.match(bad), bad
+
+
+# ---------------------------------------------------------------------------------------------- daily run (GitHub -> orchestrator)
+ORCHESTRATOR = load_template("daily-orchestrator.yaml")
+GITHUB = load_template("github-oidc.yaml")
+
+
+def test_the_orchestrator_can_only_run_the_pipeline():
+    role = ORCHESTRATOR["Resources"]["OrchestratorRole"]
+    granted = sorted(a for s in statements(role) for a in actions(s))
+    assert granted == ["events:DescribeRule", "events:PutRule", "events:PutTargets", "states:DescribeExecution", "states:StartExecution",
+                       "states:StopExecution"]
+    start = next(s for s in statements(role) if actions(s) == ["states:StartExecution"])
+    assert start["Resource"] == {"Ref": "PipelineStateMachineArn"}
+    rule = next(s for s in statements(role) if "events:PutRule" in actions(s))
+    assert "StepFunctionsGetEventsForStepFunctionsExecutionRule" in text(rule["Resource"])
+    definition = ORCHESTRATOR["Resources"]["DailyStateMachine"]["Properties"]["Definition"]
+    tasks = [s for s in definition["States"].values() if s["Type"] == "Task"]
+    assert tasks and all(s["Resource"] == "arn:aws:states:::states:startExecution.sync:2" for s in tasks)
+    assert all(s["Parameters"]["StateMachineArn"] == "${PipelineStateMachineArn}" for s in tasks)
+    # each child waits less than the whole run may take, and the pipeline's own limit (4500 s) fits in each wait
+    assert all(4500 < s["TimeoutSeconds"] <= definition["TimeoutSeconds"] for s in tasks)
+
+
+def test_the_fallback_schedule_is_off_unless_asked_for():
+    assert ORCHESTRATOR["Parameters"]["ScheduleState"]["Default"] == "DISABLED"
+    assert ORCHESTRATOR["Resources"]["FallbackSchedule"]["Properties"]["State"] == {"Ref": "ScheduleState"}
+
+
+def test_github_can_start_the_daily_run_and_nothing_else():
+    role = GITHUB["Resources"]["StartDailyRunRole"]["Properties"]
+    trust = role["AssumeRolePolicyDocument"]["Statement"]
+    assert len(trust) == 1 and trust[0]["Action"] == "sts:AssumeRoleWithWebIdentity"
+    cond = trust[0]["Condition"]
+    assert cond["StringEquals"] == {"token.actions.githubusercontent.com:aud": "sts.amazonaws.com"}
+    subjects = cond["StringLike"]["token.actions.githubusercontent.com:sub"]
+    # one repository, one environment: no branch, pull request or other repository of the owner
+    assert all(":environment:${GitHubEnvironment}" in s["Fn::Sub"] and "${GitHubRepository}" in s["Fn::Sub"] for s in subjects)
+    granted = sorted(a for s in statements(GITHUB["Resources"]["StartDailyRunRole"]) for a in actions(s))
+    assert granted == ["states:DescribeExecution", "states:StartExecution"]
+    assert role["MaxSessionDuration"] == 14400  # the workflow's longest wait; the role can only start and read daily runs

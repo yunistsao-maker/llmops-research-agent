@@ -6,7 +6,8 @@
 Payload (all optional; ``agentcore invoke "weekly"`` sends {"prompt": "weekly"}):
 
     {"kind": "weekly" | "focus" | "verify" | "prompt",
-     "instruction": "free text task",          "focus": ["lifecycle", "litellm", ...],
+     "role": "bedrock-researcher" | ...,       (one of research.skills.ROLES: adds that role's skills to the system prompt)
+     "instruction": "free text task",          "focus": ["lifecycle", "litellm", "open-models", ...],
      "claims": ["..."],                        "urls": ["https://..."],
      "periodStart": "YYYY-MM-DD",              "periodEnd": "YYYY-MM-DD",
      "dryRun": false,                          "background": false,

@@ -20,8 +20,9 @@ from .clock import iso_now, today
 from .config import Settings
 from .events import EventMapper
 from .portal.data import PortalData
-from .prompts import KNOWN_KINDS, SYSTEM_PROMPT, WEEKLY_FOCUS, build_task_prompt
+from .prompts import KNOWN_FOCUS, KNOWN_KINDS, SYSTEM_PROMPT, build_task_prompt
 from .session import ResearchSession
+from .skills import ROLES, playbook
 from .store import save_result
 from .tools import build_tools
 from .web.safe_http import SafeFetcher
@@ -57,7 +58,8 @@ def parse_payload(payload: Any) -> dict:
     for banned in ("messages", "tool_results"):
         if banned in payload:
             raise ValueError(f"`{banned}` is not supported: every invocation is a fresh, single-shot research run")
-    known = {"prompt", "kind", "instruction", "focus", "claims", "urls", "periodStart", "periodEnd", "includeDigest", "dryRun", "budget", "background"}
+    known = {"prompt", "kind", "role", "instruction", "focus", "claims", "urls", "periodStart", "periodEnd", "includeDigest", "dryRun", "budget",
+             "background"}
     unknown = set(payload) - known
     if unknown:
         raise ValueError(f"unknown payload keys {sorted(unknown)}; allowed: {sorted(known)}")
@@ -73,6 +75,11 @@ def parse_payload(payload: Any) -> dict:
     if kind not in KNOWN_KINDS:
         raise ValueError(f"kind must be one of {list(KNOWN_KINDS)}")
     task: dict[str, Any] = {"kind": kind}
+    role_name = payload.get("role")
+    if role_name is not None:
+        if not isinstance(role_name, str) or role_name not in ROLES:
+            raise ValueError(f"unknown role {str(role_name)[:60]!r}; known: {sorted(ROLES)}")
+        task["role"] = role_name
     text = (instruction or prompt or "").strip()
     if kind == "prompt" and not text:
         raise ValueError("kind 'prompt' needs a prompt/instruction")
@@ -82,10 +89,12 @@ def parse_payload(payload: Any) -> dict:
     if focus is not None:
         if not isinstance(focus, list) or not all(isinstance(f, str) for f in focus):
             raise ValueError("focus must be a list of strings")
-        bad = [f for f in focus if f not in WEEKLY_FOCUS]
+        bad = [f for f in focus if f not in KNOWN_FOCUS]
         if bad:
-            raise ValueError(f"unknown focus {bad}; known: {WEEKLY_FOCUS}")
+            raise ValueError(f"unknown focus {bad}; known: {KNOWN_FOCUS}")
         task["focus"] = focus
+    if kind in ("focus", "weekly") and not task.get("focus") and task.get("role"):
+        task["focus"] = list(ROLES[task["role"]].focus)  # a role knows what it researches
     if kind == "focus" and not task.get("focus"):
         raise ValueError("kind 'focus' needs a non-empty focus list")
     claims = payload.get("claims")
@@ -165,10 +174,15 @@ def new_session(settings: Settings, task: dict, *, portal: PortalData | None = N
     return session
 
 
+def system_prompt(task: dict) -> str:
+    """The hard rules and the proposal format, then - for a role - the role's playbook (its skills)."""
+    return SYSTEM_PROMPT + ("\n\n" + playbook(task["role"]) if task.get("role") else "")
+
+
 def build_agent(session: ResearchSession, model: Any) -> Agent:
     return Agent(
         model=model,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=system_prompt(session.task or {}),
         tools=build_tools(session),
         callback_handler=None,  # events are streamed by run_stream, nothing is printed
         conversation_manager=SlidingWindowConversationManager(window_size=100, should_truncate_results=True),
