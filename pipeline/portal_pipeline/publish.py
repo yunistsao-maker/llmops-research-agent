@@ -68,6 +68,12 @@ TOOL_FILE_TYPES = (
 )
 #: maintained by the platform team (requirements, release gates, metric definitions): research may suggest, a person decides
 _TEAM_FILES = ("data/requirements.json",)
+#: research may update it, but every change waits for a person: how "hot" an open-weight model is, and what a platform
+#: team must know before using it, are judgements across several signals - no single quote can be held against them
+REVIEWED_FILES = ("data/open-models.json",)
+#: ``checked`` entries with this topic are the Radar editor's suggestions for the curation file (skills/radar-editing)
+CURATION_TOPIC = "radar-curation"
+MAX_CURATION = 8
 #: what a model in the catalog *is*: platformStatus was decided for this name and vendor id, so they do not change unseen
 _IDENTITY = re.compile(r"/models/[^/]+/(name|vendor|family|vendorModelId)(/.*)?")
 _ACCESSED = re.compile(r"/sources/([^/]+)/accessed")
@@ -322,6 +328,9 @@ def brief(proposal: Any, run: Any = None) -> dict:
         "basedOn": _flat(manifest.get("releaseId") or manifest.get("kind") or "", 100),
         "task": _flat(_dict(proposal.get("task")).get("kind"), 40),
     }
+    curation = [c for c in _list(proposal.get("checked")) if isinstance(c, dict) and c.get("topic") == CURATION_TOPIC]
+    if curation:  # the Radar editor's merge / close / rewrite suggestions: a person applies them to the curation file
+        out["curation"] = [_flat(c.get("result"), 300) for c in curation[:MAX_CURATION]]
     if digest:
         out["digestId"] = _flat(digest.get("id"), 40)
         out["digestHeadline"] = _flat(digest.get("headline"), 500)
@@ -504,6 +513,9 @@ def _diff_holds(review: Review, policy: Policy) -> list[str]:
     for rel in _TEAM_FILES:
         if any(c.file == rel for c in review.changes + review.stamps):
             out.append(f"提案會修改 {rel}（需求、發布關卡與指標定義由平台團隊維護）")
+    for rel in REVIEWED_FILES:
+        if any(c.file == rel for c in review.changes + review.stamps):
+            out.append(f"提案會修改 {rel}（開源模型的熱度分級、託管狀態與企業注意事項目前一律由人確認）")
     computed = L.derived(review.changes)
     if computed:
         out.append("提案新增或修改了標示為 derived 的內容（由其他資料推算，沒有引文可以對照），請確認推算成立：" + _listed(computed))

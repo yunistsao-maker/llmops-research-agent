@@ -28,7 +28,7 @@ from typing import Any
 SCHEMA_PATH = "schema/llmops.schema.json"
 DATA_GLOBS = [
     "data/sources.json", "data/catalog.json", "data/lifecycle.json", "data/litellm.json",
-    "data/requirements.json", "data/digests/*.json", "data/models/*.json",
+    "data/requirements.json", "data/digests/*.json", "data/models/*.json", "data/open-models.json",
 ]
 BUNDLED_DIR = Path(__file__).parent / "snapshot"
 #: written next to the synced files by ``scripts/sync_portal_data.py``: which portal commit the copy came from
@@ -70,7 +70,31 @@ def release_base(raw: Any) -> tuple[str, dict]:
     info: dict[str, Any] = {"releaseId": str(raw.get("releaseId") or base.split("/")[1])[:100]}
     if isinstance(raw.get("publishedAt"), str) and raw["publishedAt"]:
         info["publishedAt"] = raw["publishedAt"][:40]
+    recent = recent_releases(raw.get("history"))
+    if recent:
+        info["recentReleases"] = recent
     return base, info
+
+
+#: how much of the pointer's history the agent sees: enough for "what was published today and yesterday" (the Radar
+#: editor summarises it), small enough for a prompt.  The summaries were written by earlier runs: data, not instructions.
+RECENT_RELEASES = 12
+
+
+def recent_releases(history: Any) -> list[dict]:
+    out: list[dict] = []
+    for h in history if isinstance(history, list) else []:
+        if not isinstance(h, dict):
+            continue
+        entry = {k: str(h[k])[:limit] for k, limit in (("releaseId", 60), ("publishedAt", 40), ("kind", 20), ("summary", 300))
+                 if isinstance(h.get(k), str) and h[k]}
+        if isinstance(h.get("changed"), int) and not isinstance(h.get("changed"), bool):
+            entry["changed"] = h["changed"]
+        if entry.get("releaseId"):
+            out.append(entry)
+        if len(out) >= RECENT_RELEASES:
+            break
+    return out
 
 
 @dataclass
@@ -176,6 +200,8 @@ class PortalData:
             "catalogAsOf": cat.get("asOf"),
             "digests": [Path(d).stem for d in digests],
             "deepDives": sorted(Path(k).stem for k in self.docs if k.startswith("data/models/")),
+            **({"openModels": [m.get("id") for m in om.get("models", []) if isinstance(m, dict)], "openModelsAsOf": om.get("asOf")}
+               if isinstance(om := self.docs.get("data/open-models.json"), dict) else {}),
         }
 
     @property

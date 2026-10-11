@@ -74,6 +74,9 @@ MAX_FLAGS = 40
 AUTO_PUBLISH_CHANGES = 60
 #: files a proposal may change that the platform team maintains: every change there waits for a person
 TEAM_FILES = ("data/requirements.json",)
+#: the publisher holds every change to these for a person (publish.REVIEWED_FILES): the open-weight radar's heat levels and
+#: enterprise notes weigh several signals, which no single quote can be held against
+REVIEWED_FILES = ("data/open-models.json",)
 TOP_KEYS = {"summary", "ops", "newSources", "digest", "asOfFiles", "unverified", "checked"}
 
 #: values that are not facts read from a page: stamps the harness writes, and the reporting period given in the task
@@ -98,6 +101,9 @@ _FLOORS = (
     ("data/models/*.json", re.compile(r"/(onboarding|apiCompatibility|availabilityMatrix|breakingChanges|vsPredecessor|safetyAndCompliance)(/.*)?"),
      "official", False,
      "how a model is called, where it is available and what breaks when moving to it is read from the vendor's or the cloud provider's own page"),
+    ("data/open-models.json", re.compile(r".*"), "community", False,
+     "the open-weight radar lives on model cards (Hugging Face), rankings and the developers' own pages, and every change to it waits for a "
+     "person (REVIEWED_FILES); a record's own `verification` label still sets the tier its facts need"),
     ("data/models/*.json", re.compile(r".*"), "independent", False,
      "a model's deep dive is what the team is told about the model: it is written from the vendor's pages or from an independent "
      "benchmark or newsroom, not from a forum post"),
@@ -1203,6 +1209,9 @@ def _check_op(session: ResearchSession, rep: Report, i: int, op: Op, cited: _Cit
     if computed_places:
         rep.warn(f"{label}: {', '.join(w.removeprefix(op.file) for w in computed_places[:4])}{', ...' if len(computed_places) > 4 else ''} "
                  "stands under the label 'derived' (computed, not quoted): the update will wait for a person to check the computation")
+    if op.file in REVIEWED_FILES:
+        rep.warn(f"{label}: every change to {op.file} waits for a person to approve it (heat levels, hosting and enterprise notes of "
+                 "open-weight models are judged by a person)")
     if op.file in TEAM_FILES:
         rep.warn(f"{label}: {op.file} is maintained by the platform team (requirements, release gates, metric definitions); a proposal may "
                  "suggest a change there, and it will wait for a person to approve it")

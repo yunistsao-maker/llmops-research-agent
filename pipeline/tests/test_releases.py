@@ -254,3 +254,52 @@ def test_history_is_capped(plane):
     assert len(manifest["history"]) == R.HISTORY_LIMIT and manifest["history"][0] is entry and manifest["sequence"] == 201
     assert len(entry["summary"]) <= 400 and "\n" not in entry["summary"] and entry["proposalId"] == "prop-1" and entry["changed"] == 1
     assert len(json.dumps(manifest)) < 60_000  # the pointer stays small: the UI downloads it on every load
+
+
+# ---------------------------------------------------------------------------------------------- daily versions
+def _publish_at(previous, release_id, at):
+    entry = R.history_entry(release_id, published_at=at, source={"kind": "agent"}, summary="s", changes={})
+    return R.build_manifest(release_id, snapshot_tree(), published_at=at, source={"kind": "agent"}, previous=previous, entry=entry)
+
+
+def test_the_pointer_keeps_one_version_per_taipei_day_the_last_release_of_that_day():
+    m = _publish_at(None, "20261002T010000Z-00000001", "2026-10-02T01:00:00Z")
+    m = _publish_at(m, "20261002T033000Z-00000002", "2026-10-02T03:30:00Z")
+    assert m["versions"] == [{"date": "2026-10-02", "releaseId": "20261002T033000Z-00000002", "publishedAt": "2026-10-02T03:30:00Z"}]
+    # 16:30 UTC is already the next day in Taipei (00:30)
+    m = _publish_at(m, "20261002T163000Z-00000003", "2026-10-02T16:30:00Z")
+    assert [(v["date"], v["releaseId"][-8:]) for v in m["versions"]] == [("2026-10-03", "00000003"), ("2026-10-02", "00000002")]
+
+
+def test_only_the_latest_seven_days_are_kept():
+    m = None
+    for day in range(1, 13):
+        m = _publish_at(m, f"202610{day:02d}T010000Z-{day:08d}", f"2026-10-{day:02d}T01:00:00Z")
+    assert [v["date"] for v in m["versions"]] == [f"2026-10-{d:02d}" for d in range(12, 5, -1)]
+    assert len(m["versions"]) == R.VERSIONS_LIMIT
+    # a rollback on the 12th makes the target the version of the 12th (what was live at the end of the day)
+    m = _publish_at(m, "20261011T010000Z-00000011", "2026-10-12T05:00:00Z")
+    assert m["versions"][0] == {"date": "2026-10-12", "releaseId": "20261011T010000Z-00000011", "publishedAt": "2026-10-12T05:00:00Z"}
+
+
+def test_a_pointer_from_before_versions_is_seeded_from_its_history():
+    history = [  # newest first, as the pointer keeps it
+        {"releaseId": "20261005T020000Z-0000000c", "publishedAt": "2026-10-05T02:00:00Z"},
+        {"releaseId": "20261005T010000Z-0000000b", "publishedAt": "2026-10-05T01:00:00Z"},
+        {"releaseId": "20261003T010000Z-0000000a", "publishedAt": "2026-10-03T01:00:00Z"},
+        {"releaseId": "not-a-release", "publishedAt": "2026-10-02T01:00:00Z"},
+        {"releaseId": "20261001T010000Z-00000009", "publishedAt": "t"},
+    ]
+    m = _publish_at({"history": history, "releaseId": "20261005T020000Z-0000000c"}, "20261006T010000Z-0000000d", "2026-10-06T01:00:00Z")
+    assert [(v["date"], v["releaseId"][-1]) for v in m["versions"]] == [("2026-10-06", "d"), ("2026-10-05", "c"), ("2026-10-03", "a")]
+
+
+def test_damaged_version_entries_are_dropped_and_odd_timestamps_add_none():
+    previous = {"versions": [{"date": "2026-10-01", "releaseId": "20261001T010000Z-00000001", "publishedAt": "2026-10-01T01:00:00Z", "x": "<b>"},
+                             {"date": "10/02/2026", "releaseId": "20261002T010000Z-00000002", "publishedAt": "2026-10-02T01:00:00Z"},
+                             {"date": "2026-10-03", "releaseId": "../../x", "publishedAt": "2026-10-03T01:00:00Z"},
+                             {"date": "2026-10-04", "releaseId": "20261004T010000Z-00000004", "publishedAt": "2026-10-04T01:00:00"},
+                             "x", None]}
+    m = _publish_at(previous, "20261005T010000Z-00000005", "t")  # (a timestamp without a zone has no day)
+    assert m["versions"] == [{"date": "2026-10-01", "releaseId": "20261001T010000Z-00000001", "publishedAt": "2026-10-01T01:00:00Z"}]
+    assert R.versions_of(m) == m["versions"] and R.versions_of({"versions": "x"}) == []

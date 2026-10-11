@@ -1,0 +1,89 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Lets ONE GitHub Actions environment of ONE repository start the daily LLMOps research run, with short-lived
+  credentials from GitHub's OIDC provider (no access keys stored in GitHub). The role can start and read executions of
+  the daily state machine (infra/daily-orchestrator.yaml) and nothing else.
+
+Parameters:
+  DailyStateMachineArn:
+    Type: String
+    AllowedPattern: "^arn:aws[a-z-]*:states:[a-z0-9-]+:[0-9]{12}:stateMachine:[A-Za-z0-9_-]+$"
+    Description: DailyStateMachineArn output of the daily orchestrator stack.
+  GitHubOwner:
+    Type: String
+    Default: yunistsao-maker
+    AllowedPattern: "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$"
+  GitHubRepository:
+    Type: String
+    Default: llmops-research-agent
+    AllowedPattern: "^[A-Za-z0-9._-]{1,100}$"
+  GitHubEnvironment:
+    Type: String
+    Default: llmops-daily
+    AllowedPattern: "^[A-Za-z0-9._-]{1,255}$"
+    Description: The workflow job's `environment:`. Only jobs that run in this environment can assume the role.
+  CreateOidcProvider:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: An account has at most one provider for token.actions.githubusercontent.com. "false" when it already exists (another team created it).
+  PermissionsBoundaryArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^arn:aws[a-z-]*:iam::[0-9]{12}:policy/.+$"
+
+Conditions:
+  CreateProvider: !Equals [!Ref CreateOidcProvider, "true"]
+  HasBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      # no ThumbprintList: IAM then uses the provider's own certificate chain (the property is optional)
+
+  StartDailyRunRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: GitHub Actions (one repository, one environment) starts the daily LLMOps research run
+      MaxSessionDuration: 14400 # a manual run with "wait" polls for up to ~4 hours; the role can only start and read runs
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref "AWS::NoValue"]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - CreateProvider
+                - !Ref GitHubOidcProvider
+                - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                # the second form is GitHub's subject with immutable owner / repository ids
+                token.actions.githubusercontent.com:sub:
+                  - !Sub "repo:${GitHubOwner}/${GitHubRepository}:environment:${GitHubEnvironment}"
+                  - !Sub "repo:${GitHubOwner}@*/${GitHubRepository}@*:environment:${GitHubEnvironment}"
+      Policies:
+        - PolicyName: start-the-daily-run
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: !Ref DailyStateMachineArn
+              - Effect: Allow
+                Action: states:DescribeExecution
+                Resource: !Sub
+                  - "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:${Name}:*"
+                  - Name: !Select [6, !Split [":", !Ref DailyStateMachineArn]]
+
+Outputs:
+  RoleArn:
+    Description: Set as the GitHub environment variable LLMOPS_AWS_ROLE_ARN
+    Value: !GetAtt StartDailyRunRole.Arn

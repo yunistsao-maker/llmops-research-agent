@@ -210,8 +210,14 @@ _FOCUS_HELP = {
     "regulatory": (
         "Regulatory (Taiwan MODA/FSC/AIEC, EU AI Act): look for official changes since the period start; report them in the digest."
     ),
+    "open-models": (
+        "Open-weight models: compare data/open-models.json (heat, signals, hosting, weights) with the rankings and pages its `method` "
+        "names, and add models that entered the radar's scope since the period start. Every change to this file waits for a person."
+    ),
 }
 WEEKLY_FOCUS = ["lifecycle", "litellm", "pricing", "new-models", "regulatory"]
+#: every focus a request may name (the weekly sweep's default list does not include the open-weight radar)
+KNOWN_FOCUS = WEEKLY_FOCUS + ["open-models"]
 
 
 def default_period(portal_docs: dict[str, Any], today: dt.date) -> tuple[str, str]:
@@ -252,7 +258,7 @@ def build_task_prompt(task: dict, portal_summary: dict, portal_docs: dict[str, A
     if not (period_start and period_end):
         period_start, period_end = default_period(portal_docs, today)
     lines = [
-        f"Task kind: {kind}",
+        f"Task kind: {kind}" + (f"   Role: {task['role']}" if task.get("role") else ""),
         f"Today (Asia/Taipei): {today.isoformat()}   Reporting period: {period_start} .. {period_end}",
         f"Budgets for this run: {limits['searches']} searches, {limits['fetches']} page fetches, {limits['toolCalls']} tool calls.",
     ]
@@ -273,6 +279,9 @@ def build_task_prompt(task: dict, portal_summary: dict, portal_docs: dict[str, A
     elif kind == "focus":
         focus = task.get("focus") or []
         lines += ["", "Research only these areas:"] + [f"- {_FOCUS_HELP.get(f, f)}" for f in focus]
+        if task.get("role"):
+            lines += ["", 'Do not write a digest (set "digest" to null): the Radar editor writes today\'s digest from what you publish and '
+                          "report. Make `summary`, `checked` and `unverified` complete - they are what the editor and the approver read."]
     elif kind == "verify":
         lines += ["", "Fact-check these portal claims against primary sources. For each one report whether it is confirmed, wrong or cannot be "
                       "confirmed; propose ops only for the wrong ones:"]

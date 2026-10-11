@@ -1,0 +1,140 @@
+# Starts the daily LLMOps research run in AWS (infra/daily-orchestrator.yaml): Bedrock, Azure, Google Cloud, vendor APIs,
+# LiteLLM and open-weight research, then the Release Radar editor. Each role publishes through the portal update
+# pipeline, which notifies by e-mail; the portal rebuilds after each publish and ui-verify sends "Daily update live".
+#
+# One-time setup (docs/daily-agents-design.md, section 6):
+#   1. deploy infra/daily-orchestrator.yaml and infra/github-oidc.yaml in the LLMOps AWS account;
+#   2. Settings -> Environments -> New environment "llmops-daily" (deployment branches: main only; no reviewers, or the
+#      scheduled run waits for an approval), with these environment VARIABLES (not secrets - none of them is one):
+#        LLMOPS_AWS_ROLE_ARN              RoleArn output of the github-oidc stack
+#        LLMOPS_AWS_REGION                region of the stacks, e.g. us-east-1
+#        LLMOPS_AWS_ACCOUNT_ID            the dedicated LLMOps account (the job refuses credentials of any other account)
+#        LLMOPS_DAILY_STATE_MACHINE_ARN   DailyStateMachineArn output of the daily-orchestrator stack
+#
+# GitHub runs schedules on a best-effort basis (often minutes late at busy times) and turns them off in a public
+# repository after 60 days without activity in the repository; the design doc says what to do about both.
+name: Daily LLMOps research
+
+on:
+  schedule:
+    - cron: "17 23 * * *" # 07:17 Asia/Taipei (UTC+8, no daylight saving time); off the hour, when GitHub is busiest
+  workflow_dispatch:
+    inputs:
+      roles:
+        description: "Roles to run, comma separated (empty = all): bedrock-researcher, azure-researcher, gcp-researcher, vendor-api-researcher, litellm-researcher, open-model-scout, radar-editor"
+        required: false
+        default: ""
+      wait:
+        description: "Wait for the run to finish and fail this job when a role failed (up to 3.75 hours)"
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write # GitHub's OIDC token for the AWS role; grants nothing in the repository
+  contents: read
+
+# (one group per kind of start: GitHub keeps one pending run per group, and a manual run must never push out the day's
+#  scheduled one; a job that does not wait is over in a minute)
+concurrency:
+  group: daily-llmops-research-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    environment: llmops-daily
+    timeout-minutes: 250
+    steps:
+      - name: Check the environment variables
+        env:
+          ROLE_ARN: ${{ vars.LLMOPS_AWS_ROLE_ARN }}
+          REGION: ${{ vars.LLMOPS_AWS_REGION }}
+          SM_ARN: ${{ vars.LLMOPS_DAILY_STATE_MACHINE_ARN }}
+          ACCOUNT: ${{ vars.LLMOPS_AWS_ACCOUNT_ID }}
+        run: |
+          missing=""
+          [[ "$ACCOUNT" =~ ^[0-9]{12}$ ]] || missing="$missing LLMOPS_AWS_ACCOUNT_ID(12 digits)"
+          [ -n "$ROLE_ARN" ] || missing="$missing LLMOPS_AWS_ROLE_ARN"
+          [ -n "$REGION" ] || missing="$missing LLMOPS_AWS_REGION"
+          [ -n "$SM_ARN" ] || missing="$missing LLMOPS_DAILY_STATE_MACHINE_ARN"
+          if [ -n "$missing" ]; then
+            echo "::error::environment llmops-daily is missing:$missing (see the comment at the top of this workflow)"
+            exit 1
+          fi
+
+      - name: AWS credentials (OIDC, no stored keys)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.LLMOPS_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.LLMOPS_AWS_REGION }}
+          role-session-name: gh-daily-research-${{ github.run_id }}
+          # long enough to keep polling when the job waits for the whole run (the credentials are not refreshed)
+          role-duration-seconds: ${{ inputs.wait && 14400 || 900 }}
+          mask-aws-account-id: true
+          allowed-account-ids: ${{ vars.LLMOPS_AWS_ACCOUNT_ID }}
+
+      - name: Start today's run
+        id: start
+        env:
+          SM_ARN: ${{ vars.LLMOPS_DAILY_STATE_MACHINE_ARN }}
+          ROLES: ${{ inputs.roles }}
+          EVENT: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          day=$(TZ=Asia/Taipei date +%F)
+          if [ "$EVENT" = "schedule" ]; then
+            name="daily-$day"                                   # one scheduled run per day, whatever GitHub retries
+          else
+            name="manual-$day-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          fi
+          input=$(python3 -I - <<'PY'
+          import json, os, re, sys
+          known = ["bedrock-researcher", "azure-researcher", "gcp-researcher", "vendor-api-researcher",
+                   "litellm-researcher", "open-model-scout", "radar-editor"]
+          asked = [r.strip() for r in os.environ.get("ROLES", "").split(",") if r.strip()]
+          bad = [r for r in asked if r not in known]
+          if bad:
+              sys.exit(f"unknown role(s) {bad}; known: {', '.join(known)}")
+          actor = re.sub(r"[^A-Za-z0-9-]", "", os.environ.get("ACTOR", ""))[:39]
+          doc = {"trigger": "github-" + os.environ["EVENT"], "by": f"github:{actor}"}
+          if asked:
+              doc["roles"] = [r for r in known if r in asked]
+          print(json.dumps(doc))
+          PY
+          )
+          errors=$(mktemp)
+          if ! arn=$(aws stepfunctions start-execution --state-machine-arn "$SM_ARN" --name "$name" --input "$input" \
+                       --query executionArn --output text 2>"$errors"); then
+            if grep -q ExecutionAlreadyExists "$errors"; then
+              echo "::notice::today's scheduled run ($name) already exists - nothing started. To run again, use 'Run workflow'."
+              echo "started=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::start-execution failed: $(tr '\n' ' ' < "$errors")"
+            exit 1
+          fi
+          echo "execution=$arn" >> "$GITHUB_OUTPUT"
+          echo "started=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Daily LLMOps research started"
+            echo ""
+            echo "- run: \`$name\` (Asia/Taipei $day)"
+            echo "- input: \`$input\`"
+            echo "- results: e-mail from the pipeline for each role, then \"Daily update live\" once the portal shows today's version"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for the result
+        if: inputs.wait && steps.start.outputs.started == 'true'
+        env:
+          EXECUTION: ${{ steps.start.outputs.execution }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 225); do  # (the credentials last 4 hours: stop polling before they expire)
+            status=$(aws stepfunctions describe-execution --execution-arn "$EXECUTION" --query status --output text)
+            [ "$status" = "RUNNING" ] || break
+            sleep 60
+          done
+          echo "final status: $status"
+          echo "- final status: **$status**" >> "$GITHUB_STEP_SUMMARY"
+          [ "$status" = "SUCCEEDED" ]

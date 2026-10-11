@@ -50,6 +50,7 @@ FILE_TYPES = [
     ("data/requirements.json", "RequirementsFile"),
     ("data/digests/*.json", "DigestFile"),
     ("data/models/*.json", "DeepDive"),
+    ("data/open-models.json", "OpenModelsFile"),
 ]
 MAX_URL_CHARS = 2048
 

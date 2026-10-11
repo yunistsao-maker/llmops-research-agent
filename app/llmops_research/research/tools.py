@@ -413,7 +413,7 @@ def build_tools(session: ResearchSession) -> list:
         """Read the portal's CURRENT data (what you are going to update). Use it before proposing any change.
 
         - file="summary": which files, models, digests and as-of dates exist.
-        - file="data/lifecycle.json" (or catalog/litellm/sources/requirements/digests/<id>.json/models/<id>.json) with query="haiku":
+        - file="data/lifecycle.json" (or catalog/litellm/sources/requirements/open-models/digests/<id>.json/models/<id>.json) with query="haiku":
           one-line hits with ids you can use in operation paths.
         - same file with path="/events/bedrock-claude-3-haiku-eol": the full record (paths accept ids instead of array indexes).
 

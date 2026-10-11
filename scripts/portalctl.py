@@ -313,6 +313,9 @@ def cmd_status(ctx: Ctx) -> int:
     digests = manifest.get("digests") if isinstance(manifest.get("digests"), list) else []
     ctx.say(f"內容　　　{len(manifest.get('models') or [])} 個 deep dive、{len(digests)} 份 digest（最新 {c((digests or ['—'])[-1], 40)}）、"
             f"{len(manifest.get('compatRuns') or []) + len(manifest.get('perfRuns') or [])} 份測試結果、平台清單 {'有' if manifest.get('hasInventory') else '無（顯示 example）'}")
+    versions = R.versions_of(manifest)
+    ctx.say("每日版本　" + ("、".join(f"{v['date']}（{c(v['releaseId'], 40)}）" for v in versions) if versions
+                          else "（還沒有：下一次發布會從發布紀錄補上最近的日期）"))
     ctx.say("自動發布　" + _hold_line(R.hold_of(manifest)))
     pending = _pending(ctx)
     if pending is None:
@@ -430,6 +433,12 @@ def cmd_show(ctx: Ctx) -> int:
             ctx.say(f"未能確認的項目（{len(unverified)}）：")
             for u in unverified:
                 ctx.say("  - " + (c(u, 600) if isinstance(u, str) else f"{c(u.get('claim'), 500)}" + (f"（{c(u.get('reason'), 300)}）" if u.get("reason") else "")))
+        curation = [x for x in proposal.get("checked") or [] if isinstance(x, dict) and x.get("topic") == P.CURATION_TOPIC] \
+            if isinstance(proposal.get("checked"), list) else []
+        if curation:
+            ctx.say(f"Radar 整理建議（{len(curation)}，確認後寫進 portal repo 的 radar/curation.json）：")
+            for x in curation:
+                ctx.say("  - " + c(x.get("result"), 600))
         ctx.say()
         ctx.say(f"核准這份內容：portalctl.py approve {c(target, 120)} --sha256 {c(sha, 80)}")
         ctx.say(f"捨棄：portalctl.py discard {c(target, 120)}")

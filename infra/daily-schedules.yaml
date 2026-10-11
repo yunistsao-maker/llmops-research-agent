@@ -1,3 +1,5 @@
+# SUPERSEDED by infra/daily-orchestrator.yaml (7 roles with skills, started by GitHub Actions): keep this stack DISABLED or delete
+# it, otherwise the research runs twice a day. Kept for deployments that still use it.
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   Daily LLMOps portal research, staggered so each run starts from the release the previous one published:

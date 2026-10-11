@@ -181,14 +181,21 @@ export PIPELINE_STATE_MACHINE_ARN=<StateMachineArn>
 ```
 
 確認 SNS 訂閱信，然後 `portalctl pause --reason "部署檢查"`、`portalctl resume`、`portalctl status`（各收到一封通知）。
-pipeline 自己的每週排程維持 `DISABLED`：每日研究由 3.6 的五個排程負責。
+pipeline 自己的每週排程維持 `DISABLED`：每日研究由 3.6 的每日執行負責。
 
-### 3.6 每日排程（先停用）
+### 3.6 每日執行（7 個 role）與 GitHub 觸發
+
+不再用 `infra/daily-schedules.yaml`（五個 EventBridge 排程）：改成一個依序跑 7 個 role 的 state machine，由 GitHub Actions 每天啟動。
+細節與 GitHub 端的設定在 [daily-agents-design.md](daily-agents-design.md) 第 6、7 節。
 
 ```bash
-acct aws cloudformation deploy --stack-name llmops-portal-daily --template-file infra/daily-schedules.yaml --capabilities CAPABILITY_IAM \
-    --parameter-overrides StateMachineArn=<StateMachineArn> ScheduleState=DISABLED PermissionsBoundaryArn=<有的話>
+acct aws cloudformation deploy --stack-name llmops-daily --template-file infra/daily-orchestrator.yaml --capabilities CAPABILITY_IAM \
+    --parameter-overrides PipelineStateMachineArn=<StateMachineArn> NotificationTopicArn=<NotificationTopicArn> PermissionsBoundaryArn=<有的話>
+acct aws cloudformation deploy --stack-name llmops-github-oidc --template-file infra/github-oidc.yaml --capabilities CAPABILITY_IAM \
+    --parameter-overrides DailyStateMachineArn=<llmops-daily 的 DailyStateMachineArn> PermissionsBoundaryArn=<有的話>
 ```
+
+GitHub 的 environment `llmops-daily` 與四個變數先建好，但 workflow 的排程要到第 5 節才讓它生效（merge 到 main 之前不會跑）。
 
 ### 3.7 發布後自動重建網站
 
@@ -222,14 +229,13 @@ portalctl pending && portalctl show <proposalId> && portalctl approve <proposalI
 當天 11:30 前沒收到，會收到 `Daily update NOT complete`，內文寫缺什麼（[runbook](runbook.md) 的 ui-verify 一節）。
 接著做 README 步驟 8 的 rollback 演練（`portalctl rollback` → `status` → `rollback --to` → `resume`）。
 
-## 5. 打開每日排程
+## 5. 打開每日執行
 
-```bash
-acct aws cloudformation deploy --stack-name llmops-portal-daily --template-file infra/daily-schedules.yaml --capabilities CAPABILITY_IAM \
-    --parameter-overrides ScheduleState=ENABLED --no-fail-on-empty-changeset
-```
+1. GitHub → Actions → Daily LLMOps research → Run workflow，`roles` 填 `litellm-researcher`、勾 `wait`：job 綠色、收到 pipeline 的通知信。
+2. 把 `.github/workflows/daily-research.yml` merge 到 main：之後每天 07:17（台北）自動啟動。
 
-隔天 09:00–10:00 跑五次研究；`PublishMode=review` 時每一份提案都等妳核准，核准後網站自動更新並寄出當天的通知。
+每天約 07:20–10:00 依序跑 7 個 role；`PublishMode=review` 時每一份提案都等妳核准，核准後網站自動更新並寄出當天的通知。
+（不用 GitHub 的話：`llmops-daily` stack 設 `ScheduleState=ENABLED`，由 AWS 的排程啟動，兩者擇一。）
 跑幾天、提案品質穩定後再考慮 `PublishMode=auto`（先讀 [known-issues](known-issues.md)）。
 
 ---
@@ -240,7 +246,7 @@ acct aws cloudformation deploy --stack-name llmops-portal-daily --template-file 
 
 | 順序 | 資源 | 指令（個人 profile） | 備註 |
 | --- | --- | --- | --- |
-| 1 | 每日排程 | `aws cloudformation delete-stack --stack-name <daily-schedules 的 stack> --profile $ME --region $R` | 盤點時找到的名稱；沒有就跳過 |
+| 1 | 每日排程 | `aws cloudformation delete-stack --stack-name <daily-schedules 或 daily-orchestrator 的 stack> --profile $ME --region $R` | 盤點時找到的名稱；沒有就跳過 |
 | 2 | 重建觸發、ui-verify | 同上，`amplify-trigger`、`ui-verify` 的 stack | 沒部署過就跳過 |
 | 3 | pipeline | `aws cloudformation delete-stack --stack-name llmops-portal-pipeline --profile $ME --region $R` | state machine、Lambda、SNS、alarm 一起刪除 |
 | 4 | AgentCore runtime 與 gateway | 在**原本**部署個人帳號的資料夾：`agentcore remove …` 之後 `agentcore deploy`（AWS_PROFILE=$ME） | 先 `agentcore remove --help` 看要移除的項目；完成後 `list-agent-runtimes`／`list-gateways` 應該是空的 |

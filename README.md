@@ -161,6 +161,8 @@ git -C ../llmops-portal checkout -- data               # 測完把 portal repo �
 
 > 要部署到公司專用帳號／sandbox 帳號（並下架個人帳號的舊部署），照 [docs/migrate-to-dedicated-account.md](docs/migrate-to-dedicated-account.md)：
 > 每個指令都經過 `scripts/in_account.sh`，帳號不對就不執行。
+>
+> 每日研究（7 個 role、每個 role 的 skill、每日版本、GitHub Actions 觸發）的設計與部署：[docs/daily-agents-design.md](docs/daily-agents-design.md)。
 
 **前置**
 

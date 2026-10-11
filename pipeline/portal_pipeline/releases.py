@@ -1,6 +1,7 @@
 """The layout the portal UI reads, and the only way it changes.
 
-    manifest.json                     the pointer: which release is live (+ the index the UI needs + recent history)
+    manifest.json                     the pointer: which release is live (+ the index the UI needs + recent history
+                                      + versions: the release live at the end of each of the last 7 changed days)
     releases/<id>/release.json        what the release contains, where it came from, what changed
     releases/<id>/schema/...          llmops.schema.json
     releases/<id>/data/...            catalog.json, lifecycle.json, digests/*.json, models/*.json, internal/*.json ...
@@ -49,6 +50,12 @@ POINTER_CACHE = "no-cache"  # CDN and browsers must revalidate the pointer on ev
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_FILES = 2000
 HISTORY_LIMIT = 60
+#: Daily versions: the pointer remembers, for each of the most recent VERSIONS_LIMIT calendar days on which the live
+#: release changed, which release was live at the end of that day.  The portal's build shows one version per day (the
+#: date is the version's name) and takes a day without an entry from the latest entry before it.
+VERSIONS_LIMIT = 7
+#: The team's calendar (Taiwan has no daylight saving time, so a fixed offset is exact and needs no tz database).
+VERSION_TZ = dt.timezone(dt.timedelta(hours=8), "Asia/Taipei")
 #: A release is hundreds of small objects; one at a time that is minutes of round trips, which a Lambda does not have.
 IO_THREADS = 8  # below the default connection pool of a boto3 client (10)
 AUTO_PUBLISH = "autoPublish"  # the pause flag lives in the pointer: reading it and switching the pointer are one conditional write
@@ -120,7 +127,7 @@ def allowed(rel: str) -> bool:
 PUBLISHABLE = (
     "schema/llmops.schema.json",
     "data/sources.json", "data/catalog.json", "data/lifecycle.json", "data/litellm.json", "data/requirements.json",
-    "data/digests/*.json", "data/models/*.json",
+    "data/digests/*.json", "data/models/*.json", "data/open-models.json",
     "data/internal/platform-inventory*.json",
     "runs/compat/*.json", "runs/perf/*.json",
     "config/litellm.example.yaml",
@@ -446,7 +453,63 @@ def build_manifest(release_id: str, files: dict[str, bytes], *, published_at: st
         manifest[AUTO_PUBLISH] = flag
     manifest.update(ui_index(files))
     manifest["history"] = history[:HISTORY_LIMIT]
+    manifest["versions"] = dated_versions(previous, release_id, published_at)
     return manifest
+
+
+def version_day(published_at: Any) -> str | None:
+    """The calendar day (VERSION_TZ, YYYY-MM-DD) of a ``publishedAt`` timestamp; None when it is not a timestamp with a zone."""
+    if not isinstance(published_at, str):
+        return None
+    try:
+        when = dt.datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return when.astimezone(VERSION_TZ).date().isoformat() if when.tzinfo else None
+
+
+_DAY = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
+
+
+def _version(entry: Any) -> dict | None:
+    """A well-formed versions[] entry (only the three fields, re-checked: the pointer is read back from storage)."""
+    if not isinstance(entry, dict) or not isinstance(entry.get("date"), str) or not _DAY.match(entry["date"]):
+        return None
+    if not is_release_id(entry.get("releaseId")) or version_day(entry.get("publishedAt")) is None:
+        return None
+    return {"date": entry["date"], "releaseId": entry["releaseId"], "publishedAt": entry["publishedAt"]}
+
+
+def versions_of(manifest: dict) -> list[dict]:
+    """The pointer's daily versions as stored (well-formed entries only, newest first)."""
+    listed = manifest.get("versions") if isinstance(manifest, dict) else None
+    return sorted((v for v in (_version(e) for e in (listed if isinstance(listed, list) else [])) if v), key=lambda v: v["date"], reverse=True)
+
+
+def dated_versions(previous: dict | None, release_id: str, published_at: str) -> list[dict]:
+    """versions[] of the pointer that makes ``release_id`` live at ``published_at``: newest day first, one entry per day
+    (the release live at the end of it), at most VERSIONS_LIMIT days.
+
+    A pointer written before versions existed has none; its history (newest first) gives the same answer for the days
+    it reaches, so the first publish after an upgrade already carries the past week.
+    """
+    prev = previous or {}
+    if isinstance(prev.get("versions"), list):
+        earlier = [v for v in (_version(e) for e in prev["versions"]) if v]
+    else:
+        earlier = []
+        for h in prev.get("history") if isinstance(prev.get("history"), list) else []:
+            if isinstance(h, dict):
+                v = _version({"date": version_day(h.get("publishedAt")), "releaseId": h.get("releaseId"), "publishedAt": h.get("publishedAt")})
+                if v and all(v["date"] != e["date"] for e in earlier):  # history is newest first: the first of a day is its last
+                    earlier.append(v)
+    by_day: dict[str, dict] = {}
+    for v in earlier:
+        by_day.setdefault(v["date"], v)
+    today = version_day(published_at)
+    if today:
+        by_day[today] = {"date": today, "releaseId": release_id, "publishedAt": published_at}
+    return [by_day[d] for d in sorted(by_day, reverse=True)[:VERSIONS_LIMIT]]
 
 
 def _sequence(manifest: dict | None) -> int:

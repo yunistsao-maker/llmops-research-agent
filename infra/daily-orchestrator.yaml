@@ -1,0 +1,379 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  The daily LLMOps research run: one execution runs the research roles one after another - Bedrock, Azure, Google
+  Cloud, vendor APIs, LiteLLM, open-weight models - and the Release Radar editor last, each as an execution of the
+  portal update pipeline (research on AgentCore, validate, publish, notify). Started by GitHub Actions
+  (.github/workflows/daily-research.yml, via infra/github-oidc.yaml) or, as a fallback, by its own schedule. A role
+  that fails does not stop the others; the execution then ends failed (DailyRunIncomplete) so the alarm and GitHub
+  show it.
+
+Parameters:
+  PipelineStateMachineArn:
+    Type: String
+    AllowedPattern: "^arn:aws[a-z-]*:states:[a-z0-9-]+:[0-9]{12}:stateMachine:[A-Za-z0-9_-]+$"
+    Description: StateMachineArn output of the pipeline stack (llmops-portal-pipeline).
+  NotificationTopicArn:
+    Type: String
+    Default: ""
+    Description: Optional - NotificationTopicArn output of the pipeline stack; the alarm on failed daily runs goes there.
+  ScheduleState:
+    Type: String
+    Default: DISABLED
+    AllowedValues: [ENABLED, DISABLED]
+    Description: AWS-native fallback schedule. Keep DISABLED while GitHub Actions starts the daily run (both would run it twice).
+  ScheduleExpression:
+    Type: String
+    Default: cron(17 7 * * ? *)
+  ScheduleTimezone:
+    Type: String
+    Default: Asia/Taipei
+  PermissionsBoundaryArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^arn:aws[a-z-]*:iam::[0-9]{12}:policy/.+$"
+
+Conditions:
+  HasBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
+  HasTopic: !Not [!Equals [!Ref NotificationTopicArn, ""]]
+
+Resources:
+  OrchestratorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref "AWS::NoValue"]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: states.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref "AWS::AccountId"
+      Policies:
+        - PolicyName: run-the-pipeline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: !Ref PipelineStateMachineArn
+              - Effect: Allow
+                Action: [states:DescribeExecution, states:StopExecution]
+                Resource: !Sub
+                  - "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:${Name}:*"
+                  - Name: !Select [6, !Split [":", !Ref PipelineStateMachineArn]]
+              # how Step Functions waits for a child execution (.sync): a managed EventBridge rule
+              - Effect: Allow
+                Action: [events:PutTargets, events:PutRule, events:DescribeRule]
+                Resource: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventsForStepFunctionsExecutionRule"
+
+  DailyStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub "${AWS::StackName}"
+      StateMachineType: STANDARD
+      RoleArn: !GetAtt OrchestratorRole.Arn
+      DefinitionSubstitutions:
+        PipelineStateMachineArn: !Ref PipelineStateMachineArn
+      # Input: {} (every role) or {"roles": ["bedrock-researcher", ...]}; "trigger" / "by" name who started it.
+      Definition:
+        Comment: "LLMOps daily research: every role in order, the Radar editor last"
+        StartAt: Init
+        TimeoutSeconds: 36000
+        States:
+          Init:
+            Type: Choice
+            Choices:
+              - Variable: "$.roles"
+                IsPresent: true
+                Next: Plan
+            Default: AllRoles
+          AllRoles:
+            Type: Pass
+            Result: ["bedrock-researcher", "azure-researcher", "gcp-researcher", "vendor-api-researcher", "litellm-researcher", "open-model-scout", "radar-editor"]
+            ResultPath: "$.roles"
+            Next: Plan
+          # which roles run: a flag per role (Choice cannot call intrinsic functions itself)
+          Plan:
+            Type: Pass
+            Parameters:
+              "roles.$": "$.roles"
+              run:
+                "Bedrock.$": "States.ArrayContains($.roles, 'bedrock-researcher')"
+                "Azure.$": "States.ArrayContains($.roles, 'azure-researcher')"
+                "GoogleCloud.$": "States.ArrayContains($.roles, 'gcp-researcher')"
+                "VendorApis.$": "States.ArrayContains($.roles, 'vendor-api-researcher')"
+                "LiteLLM.$": "States.ArrayContains($.roles, 'litellm-researcher')"
+                "OpenModels.$": "States.ArrayContains($.roles, 'open-model-scout')"
+                "RadarEditor.$": "States.ArrayContains($.roles, 'radar-editor')"
+            Next: CheckBedrock
+          CheckBedrock:
+            Type: Choice
+            Choices:
+              - Variable: "$.run.Bedrock"
+                BooleanEquals: true
+                Next: Bedrock
+            Default: CheckAzure
+          Bedrock:
+            Type: Task
+            Resource: "arn:aws:states:::states:startExecution.sync:2"
+            Parameters:
+              StateMachineArn: "${PipelineStateMachineArn}"
+              "Name.$": "States.Format('{}-bedrock', $$.Execution.Name)"
+              Input:
+                request: {"kind": "focus", "role": "bedrock-researcher", "budget": {"searches": 8, "fetches": 14, "toolCalls": 60}}
+                trigger: "daily-bedrock-researcher"
+                "AWS_STEP_FUNCTIONS_STARTED_BY_EXECUTION_ID.$": "$$.Execution.Id"
+            TimeoutSeconds: 4800
+            ResultSelector:
+              "status.$": "$.Status"
+            ResultPath: "$.results.Bedrock"
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.failed.Bedrock"
+                Next: CheckAzure
+            Next: CheckAzure
+          CheckAzure:
+            Type: Choice
+            Choices:
+              - Variable: "$.run.Azure"
+                BooleanEquals: true
+                Next: Azure
+            Default: CheckGoogleCloud
+          Azure:
+            Type: Task
+            Resource: "arn:aws:states:::states:startExecution.sync:2"
+            Parameters:
+              StateMachineArn: "${PipelineStateMachineArn}"
+              "Name.$": "States.Format('{}-azure', $$.Execution.Name)"
+              Input:
+                request: {"kind": "focus", "role": "azure-researcher", "budget": {"searches": 8, "fetches": 14, "toolCalls": 60}}
+                trigger: "daily-azure-researcher"
+                "AWS_STEP_FUNCTIONS_STARTED_BY_EXECUTION_ID.$": "$$.Execution.Id"
+            TimeoutSeconds: 4800
+            ResultSelector:
+              "status.$": "$.Status"
+            ResultPath: "$.results.Azure"
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.failed.Azure"
+                Next: CheckGoogleCloud
+            Next: CheckGoogleCloud
+          CheckGoogleCloud:
+            Type: Choice
+            Choices:
+              - Variable: "$.run.GoogleCloud"
+                BooleanEquals: true
+                Next: GoogleCloud
+            Default: CheckVendorApis
+          GoogleCloud:
+            Type: Task
+            Resource: "arn:aws:states:::states:startExecution.sync:2"
+            Parameters:
+              StateMachineArn: "${PipelineStateMachineArn}"
+              "Name.$": "States.Format('{}-googlecloud', $$.Execution.Name)"
+              Input:
+                request: {"kind": "focus", "role": "gcp-researcher", "budget": {"searches": 8, "fetches": 14, "toolCalls": 60}}
+                trigger: "daily-gcp-researcher"
+                "AWS_STEP_FUNCTIONS_STARTED_BY_EXECUTION_ID.$": "$$.Execution.Id"
+            TimeoutSeconds: 4800
+            ResultSelector:
+              "status.$": "$.Status"
+            ResultPath: "$.results.GoogleCloud"
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.failed.GoogleCloud"
+                Next: CheckVendorApis
+            Next: CheckVendorApis
+          CheckVendorApis:
+            Type: Choice
+            Choices:
+              - Variable: "$.run.VendorApis"
+                BooleanEquals: true
+                Next: VendorApis
+            Default: CheckLiteLLM
+          VendorApis:
+            Type: Task
+            Resource: "arn:aws:states:::states:startExecution.sync:2"
+            Parameters:
+              StateMachineArn: "${PipelineStateMachineArn}"
+              "Name.$": "States.Format('{}-vendorapis', $$.Execution.Name)"
+              Input:
+                request: {"kind": "focus", "role": "vendor-api-researcher", "budget": {"searches": 8, "fetches": 14, "toolCalls": 60}}
+                trigger: "daily-vendor-api-researcher"
+                "AWS_STEP_FUNCTIONS_STARTED_BY_EXECUTION_ID.$": "$$.Execution.Id"
+            TimeoutSeconds: 4800
+            ResultSelector:
+              "status.$": "$.Status"
+            ResultPath: "$.results.VendorApis"
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.failed.VendorApis"
+                Next: CheckLiteLLM
+            Next: CheckLiteLLM
+          CheckLiteLLM:
+            Type: Choice
+            Choices:
+              - Variable: "$.run.LiteLLM"
+                BooleanEquals: true
+                Next: LiteLLM
+            Default: CheckOpenModels
+          LiteLLM:
+            Type: Task
+            Resource: "arn:aws:states:::states:startExecution.sync:2"
+            Parameters:
+              StateMachineArn: "${PipelineStateMachineArn}"
+              "Name.$": "States.Format('{}-litellm', $$.Execution.Name)"
+              Input:
+                request: {"kind": "focus", "role": "litellm-researcher", "budget": {"searches": 8, "fetches": 14, "toolCalls": 60}}
+                trigger: "daily-litellm-researcher"
+                "AWS_STEP_FUNCTIONS_STARTED_BY_EXECUTION_ID.$": "$$.Execution.Id"
+            TimeoutSeconds: 4800
+            ResultSelector:
+              "status.$": "$.Status"
+            ResultPath: "$.results.LiteLLM"
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.failed.LiteLLM"
+                Next: CheckOpenModels
+            Next: CheckOpenModels
+          CheckOpenModels:
+            Type: Choice
+            Choices:
+              - Variable: "$.run.OpenModels"
+                BooleanEquals: true
+                Next: OpenModels
+            Default: CheckRadarEditor
+          OpenModels:
+            Type: Task
+            Resource: "arn:aws:states:::states:startExecution.sync:2"
+            Parameters:
+              StateMachineArn: "${PipelineStateMachineArn}"
+              "Name.$": "States.Format('{}-openmodels', $$.Execution.Name)"
+              Input:
+                request: {"kind": "focus", "role": "open-model-scout", "budget": {"searches": 10, "fetches": 18, "toolCalls": 80}}
+                trigger: "daily-open-model-scout"
+                "AWS_STEP_FUNCTIONS_STARTED_BY_EXECUTION_ID.$": "$$.Execution.Id"
+            TimeoutSeconds: 4800
+            ResultSelector:
+              "status.$": "$.Status"
+            ResultPath: "$.results.OpenModels"
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.failed.OpenModels"
+                Next: CheckRadarEditor
+            Next: CheckRadarEditor
+          CheckRadarEditor:
+            Type: Choice
+            Choices:
+              - Variable: "$.run.RadarEditor"
+                BooleanEquals: true
+                Next: RadarEditor
+            Default: Outcome
+          RadarEditor:
+            Type: Task
+            Resource: "arn:aws:states:::states:startExecution.sync:2"
+            Parameters:
+              StateMachineArn: "${PipelineStateMachineArn}"
+              "Name.$": "States.Format('{}-radareditor', $$.Execution.Name)"
+              Input:
+                request: {"kind": "weekly", "role": "radar-editor", "includeDigest": true, "budget": {"searches": 8, "fetches": 14, "toolCalls": 70}}
+                trigger: "daily-radar-editor"
+                "AWS_STEP_FUNCTIONS_STARTED_BY_EXECUTION_ID.$": "$$.Execution.Id"
+            TimeoutSeconds: 4800
+            ResultSelector:
+              "status.$": "$.Status"
+            ResultPath: "$.results.RadarEditor"
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.failed.RadarEditor"
+                Next: Outcome
+            Next: Outcome
+          Outcome:
+            Type: Choice
+            Choices:
+              - Or:
+                  - Variable: "$.failed.Bedrock"
+                    IsPresent: true
+                  - Variable: "$.failed.Azure"
+                    IsPresent: true
+                  - Variable: "$.failed.GoogleCloud"
+                    IsPresent: true
+                  - Variable: "$.failed.VendorApis"
+                    IsPresent: true
+                  - Variable: "$.failed.LiteLLM"
+                    IsPresent: true
+                  - Variable: "$.failed.OpenModels"
+                    IsPresent: true
+                  - Variable: "$.failed.RadarEditor"
+                    IsPresent: true
+                Next: DailyRunIncomplete
+            Default: Done
+          DailyRunIncomplete:
+            Type: Fail
+            Error: DailyRunIncomplete
+            Cause: At least one role's pipeline execution failed or was refused. Each one sent its own notification; the failed roles are under $.failed in this execution's history. The other roles ran and published normally.
+          Done:
+            Type: Succeed
+
+  FailedRunsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasTopic
+    Properties:
+      AlarmDescription: A daily research run did not complete (one role failed, or the run timed out / was aborted)
+      Namespace: AWS/States
+      MetricName: ExecutionsFailed
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !Ref DailyStateMachine
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref NotificationTopicArn]
+
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref "AWS::NoValue"]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref "AWS::AccountId"
+      Policies:
+        - PolicyName: start-the-daily-run
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: !Ref DailyStateMachine
+
+  FallbackSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Description: AWS-native start of the daily research run (fallback for the GitHub Actions schedule)
+      State: !Ref ScheduleState
+      ScheduleExpression: !Ref ScheduleExpression
+      ScheduleExpressionTimezone: !Ref ScheduleTimezone
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !Ref DailyStateMachine
+        RoleArn: !GetAtt SchedulerRole.Arn
+        Input: "{\"trigger\": \"aws-schedule\"}"
+        RetryPolicy: { MaximumRetryAttempts: 2, MaximumEventAgeInSeconds: 3600 }
+
+Outputs:
+  DailyStateMachineArn:
+    Value: !Ref DailyStateMachine
+  Roles:
+    Description: The role names a run may list in "roles"
+    Value: bedrock-researcher,azure-researcher,gcp-researcher,vendor-api-researcher,litellm-researcher,open-model-scout,radar-editor
