@@ -65,6 +65,7 @@ TOOL_FILE_TYPES = (
     ("data/internal/platform-inventory*.json", "PlatformInventory"),
     ("runs/perf/*.json", "PerfRun"),
     ("runs/compat/*.json", "CompatRun"),
+    ("runs/security/*.json", "SecurityRunSummary"),  # tools/sec_suite.py --publish-summary: aggregates only, no prompt text
 )
 #: maintained by the platform team (requirements, release gates, metric definitions): research may suggest, a person decides
 _TEAM_FILES = ("data/requirements.json",)
@@ -1252,6 +1253,9 @@ def tool_file_problems(schema: dict, files: dict[str, bytes]) -> list[Problem]:
         except ValueError as e:
             problems.append(Problem(rel, "", f"不是有效的 JSON（{e}）"))
             continue
+        if definition == "SecurityRunSummary" and isinstance(doc, dict) and "cases" in doc:
+            # the full run holds every prompt and response (harmful-request datasets among them): it stays on the tester's machine
+            problems.append(Problem(rel, "/cases", "是完整的安全測試結果（含 prompt 與回應全文），不能發布；請用 sec_suite.py run --publish-summary 產生的彙總"))
         problems.extend(validate_definition(schema, definition, doc, rel))
         problems.extend(Problem(rel, where, "is not a finite number (NaN / Infinity cannot be stored as JSON)") for where in non_finite(doc))
     return problems

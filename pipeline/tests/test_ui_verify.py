@@ -95,3 +95,18 @@ def test_unreachable_site_is_incomplete(tmp_path):
     d, sent = deps(tmp_path, down)
     assert uv.handle_deadline(d)["result"] == "incomplete-notified"
     assert "連不到網站" in sent[0]["message"]
+
+
+def test_two_portals_on_one_data_location_each_send_their_own_daily_message(tmp_path):
+    full, sent_full = deps(tmp_path, site())
+    clean, sent_clean = deps(tmp_path, site())  # same state store: the markers must not collide
+    clean.site_name = "clean"
+    assert uv.handle_amplify(EV_OK, full)["result"] == "notified"
+    assert uv.handle_amplify(EV_OK, clean)["result"] == "notified"
+    assert uv.handle_amplify(EV_OK, clean)["result"] == "already-notified"
+    assert len(sent_full) == 1 and len(sent_clean) == 1
+    assert sent_full[0]["subject"].startswith("[LLMOps portal] Daily update live")
+    assert sent_clean[0]["subject"].startswith("[LLMOps portal] [clean] Daily update live")
+    assert sorted(p.name for p in (tmp_path / "pipeline" / "notified").iterdir()) == ["ui-2026-10-11.json", "ui-clean-2026-10-11.json"]
+    failed = uv.handle_amplify({"detail": {**EV_OK["detail"], "jobStatus": "FAILED"}}, clean)
+    assert failed["result"] == "build-failed-notified" and sent_clean[-1]["subject"].startswith("[LLMOps portal] [clean] UI build FAILED")

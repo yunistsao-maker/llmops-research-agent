@@ -163,6 +163,8 @@ git -C ../llmops-portal checkout -- data               # 測完把 portal repo �
 > 每個指令都經過 `scripts/in_account.sh`，帳號不對就不執行。
 >
 > 每日研究（7 個 role、每個 role 的 skill、每日版本、GitHub Actions 觸發）的設計與部署：[docs/daily-agents-design.md](docs/daily-agents-design.md)。
+>
+> 完整版與乾淨版兩個 portal、上線前測試結果（模型頁的「內部測試」）：[docs/portal-editions-and-tests.md](docs/portal-editions-and-tests.md)。
 
 **前置**
 

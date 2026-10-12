@@ -12,6 +12,13 @@ Parameters:
     Type: String
     NoEcho: true
     Description: Incoming webhook of the Amplify branch (aws amplify create-webhook); it carries a token.
+  SecondAmplifyWebhookUrl:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: >-
+      Optional - webhook of a second Amplify app built from the same repo (the clean edition, PORTAL_EDITION=clean),
+      so both portals rebuild after every publish.
 
   PermissionsBoundaryArn:
     Type: String
@@ -21,6 +28,7 @@ Parameters:
 
 Conditions:
   HasBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
+  HasSecondSite: !Not [!Equals [!Ref SecondAmplifyWebhookUrl, ""]]
 
 Resources:
   # API destinations require a connection; the Amplify webhook authenticates with the token in its URL.
@@ -41,6 +49,15 @@ Resources:
       InvocationEndpoint: !Ref AmplifyWebhookUrl
       InvocationRateLimitPerSecond: 1
 
+  SecondWebhookDestination:
+    Type: AWS::Events::ApiDestination
+    Condition: HasSecondSite
+    Properties:
+      ConnectionArn: !GetAtt WebhookConnection.Arn
+      HttpMethod: POST
+      InvocationEndpoint: !Ref SecondAmplifyWebhookUrl
+      InvocationRateLimitPerSecond: 1
+
   InvokeRole:
     Type: AWS::IAM::Role
     Properties:
@@ -58,7 +75,9 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: events:InvokeApiDestination
-                Resource: !GetAtt WebhookDestination.Arn
+                Resource:
+                  - !GetAtt WebhookDestination.Arn
+                  - !If [HasSecondSite, !GetAtt SecondWebhookDestination.Arn, !Ref "AWS::NoValue"]
 
   OnPipelineSucceeded:
     Type: AWS::Events::Rule
@@ -76,3 +95,11 @@ Resources:
           RoleArn: !GetAtt InvokeRole.Arn
           Input: "{}"
           RetryPolicy: { MaximumRetryAttempts: 3 }
+        - !If
+          - HasSecondSite
+          - Id: amplify-webhook-clean
+            Arn: !GetAtt SecondWebhookDestination.Arn
+            RoleArn: !GetAtt InvokeRole.Arn
+            Input: "{}"
+            RetryPolicy: { MaximumRetryAttempts: 3 }
+          - !Ref "AWS::NoValue"
