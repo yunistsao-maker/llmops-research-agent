@@ -258,7 +258,8 @@ def ui_index(files: dict[str, bytes]) -> dict[str, Any]:
         "models": [n[:-5] for n in names("data/models")],
         "compatRuns": names("runs/compat"),
         "perfRuns": names("runs/perf"),
-        "securityRuns": names("runs/security"),
+        "securityRuns": [n for n in names("runs/security") if not n.endswith(".cases.json")],
+        "securityCases": [n for n in names("runs/security") if n.endswith(".cases.json")],
         "hasInventory": "data/internal/platform-inventory.json" in files,
     }
 

@@ -65,6 +65,7 @@ TOOL_FILE_TYPES = (
     ("data/internal/platform-inventory*.json", "PlatformInventory"),
     ("runs/perf/*.json", "PerfRun"),
     ("runs/compat/*.json", "CompatRun"),
+    ("runs/security/*.cases.json", "SecurityRunCases"),  # sec_suite.py publish: cases, redacted (first: the pattern below matches it too)
     ("runs/security/*.json", "SecurityRunSummary"),  # tools/sec_suite.py --publish-summary: aggregates only, no prompt text
 )
 #: maintained by the platform team (requirements, release gates, metric definitions): research may suggest, a person decides
@@ -1240,6 +1241,30 @@ def answered(store: Store, control: Store, proposal_id: str, action: str, reques
 
 
 # ---------------------------------------------------------------------------------------------- manual releases
+#: dataset risk levels whose case text may be published (tools/secsuite/manifest.json); anything else - and a risk the file does
+#: not state - must come without text
+_SHOWABLE_RISK = ("none", "low")
+_CASE_TEXT = ("system", "prompt", "response", "detail", "tools")
+
+
+def unredacted_cases(doc: Any) -> list[tuple[str, str]]:
+    """Where a published security-cases file still holds text it must not: a case of a sensitive dataset (or of an unstated risk)
+    with a prompt, a response, a system prompt, tool names or scorer detail, or a file that is not the redacted (public) form.
+    Checked whatever the schema of the day says - the full run holds harmful-request benchmark text and must stay off the portal."""
+    if not isinstance(doc, dict) or doc.get("public") is not True or not isinstance(doc.get("cases"), list):
+        return [("", "不是 sec_suite.py publish 產生的遮蔽版（public: true）逐筆案例，不能發布")]
+    out = []
+    for i, case in enumerate(doc["cases"]):
+        if not isinstance(case, dict):
+            out.append((f"/cases/{i}", "不是一筆案例"))
+            continue
+        if case.get("risk") in _SHOWABLE_RISK and case.get("redacted") is False:
+            continue
+        if any(case.get(k) for k in _CASE_TEXT):
+            out.append((f"/cases/{i}", f"資料集 {_flat(case.get('dataset'), 60)} 的風險是 {_flat(case.get('risk'), 20) or '未標示'}：題目與回應不能發布"))
+    return out
+
+
 def tool_file_problems(schema: dict, files: dict[str, bytes]) -> list[Problem]:
     """Problems in the test results and the platform inventory (types the schema does not define are skipped)."""
     problems: list[Problem] = []
@@ -1253,6 +1278,8 @@ def tool_file_problems(schema: dict, files: dict[str, bytes]) -> list[Problem]:
         except ValueError as e:
             problems.append(Problem(rel, "", f"不是有效的 JSON（{e}）"))
             continue
+        if definition == "SecurityRunCases":
+            problems.extend(Problem(rel, where, why) for where, why in unredacted_cases(doc))
         if definition == "SecurityRunSummary" and isinstance(doc, dict) and "cases" in doc:
             # the full run holds every prompt and response (harmful-request datasets among them): it stays on the tester's machine
             problems.append(Problem(rel, "/cases", "是完整的安全測試結果（含 prompt 與回應全文），不能發布；請用 sec_suite.py run --publish-summary 產生的彙總"))
