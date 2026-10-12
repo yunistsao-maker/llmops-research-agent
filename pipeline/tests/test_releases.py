@@ -53,10 +53,12 @@ def test_what_may_be_part_of_a_release(rel, ok):
 def test_the_index_matches_what_the_ui_build_step_used_to_generate():
     """web/scripts/sync-data.mjs listed the *.json files directly inside each folder, sorted, digests/models without extension."""
     files = {**snapshot_tree(), "data/digests/2026-10-05.json": b"{}", "data/digests/notes.txt": b"x", "data/digests/old/2025-01-01.json": b"{}",
-             "data/models/gpt-6-sol.json": b"{}", "data/models/claude-opus-5-5.json": b"{}", "runs/perf/b.json": b"{}", "runs/perf/a.json": b"{}"}
+             "data/models/gpt-6-sol.json": b"{}", "data/models/claude-opus-5-5.json": b"{}", "runs/perf/b.json": b"{}", "runs/perf/a.json": b"{}",
+             "runs/security/20261012T215504-494d13.json": b"{}"}
     assert R.ui_index(files) == {
         "digests": ["2026-09-24", "2026-10-05"], "models": ["claude-opus-5-5", "gpt-6-sol"],
-        "compatRuns": ["example-mock.json"], "perfRuns": ["a.json", "b.json", "example-mock.json"], "hasInventory": False,
+        "compatRuns": ["example-mock.json"], "perfRuns": ["a.json", "b.json", "example-mock.json"],
+        "securityRuns": ["20261012T215504-494d13.json"], "hasInventory": False,
     }
     assert R.ui_index({**files, "data/internal/platform-inventory.json": b"{}"})["hasInventory"] is True
 
@@ -303,3 +305,8 @@ def test_damaged_version_entries_are_dropped_and_odd_timestamps_add_none():
     m = _publish_at(previous, "20261005T010000Z-00000005", "t")  # (a timestamp without a zone has no day)
     assert m["versions"] == [{"date": "2026-10-01", "releaseId": "20261001T010000Z-00000001", "publishedAt": "2026-10-01T01:00:00Z"}]
     assert R.versions_of(m) == m["versions"] and R.versions_of({"versions": "x"}) == []
+
+
+def test_security_test_summaries_are_published_with_the_other_test_results():
+    assert R.publishable("runs/security/20261012T215504-494d13.json")
+    assert not R.publishable("runs/security/nested/x.json") and not R.publishable("runs/secsuite-cache/x.json")

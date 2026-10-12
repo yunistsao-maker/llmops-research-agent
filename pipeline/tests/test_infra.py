@@ -423,3 +423,14 @@ def test_github_can_start_the_daily_run_and_nothing_else():
     granted = sorted(a for s in statements(GITHUB["Resources"]["StartDailyRunRole"]) for a in actions(s))
     assert granted == ["states:DescribeExecution", "states:StartExecution"]
     assert role["MaxSessionDuration"] == 14400  # the workflow's longest wait; the role can only start and read daily runs
+
+
+def test_a_second_portal_rebuilds_after_every_publish_only_when_it_is_configured():
+    trigger = load_template("amplify-trigger.yaml")
+    res = trigger["Resources"]
+    assert trigger["Parameters"]["SecondAmplifyWebhookUrl"]["Default"] == "" and trigger["Parameters"]["SecondAmplifyWebhookUrl"]["NoEcho"] is True
+    assert res["SecondWebhookDestination"]["Condition"] == "HasSecondSite"
+    targets = res["OnPipelineSucceeded"]["Properties"]["Targets"]
+    assert targets[0]["Id"] == "amplify-webhook" and targets[1]["Fn::If"][0] == "HasSecondSite"
+    granted = [s for s in statements(res["InvokeRole"]) if "events:InvokeApiDestination" in actions(s)]
+    assert len(granted) == 1 and len(granted[0]["Resource"]) == 2

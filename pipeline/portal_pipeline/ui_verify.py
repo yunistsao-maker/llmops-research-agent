@@ -219,20 +219,28 @@ class Deps:
     tz: str = "Asia/Taipei"
     runs: Callable[[str], list[tuple[str, str]]] = lambda today: []
     now: Callable[[], datetime] | None = None
+    #: which portal this is when one data location feeds two ("clean"): its own once-a-day marker and a subject tag
+    site_name: str = ""
 
 
-def _marker(today: str) -> str:
-    return f"notified/ui-{today}.json"
+def _marker(today: str, site_name: str = "") -> str:
+    return f"notified/ui-{site_name}-{today}.json" if site_name else f"notified/ui-{today}.json"
+
+
+def _tagged(message: dict[str, str], site_name: str) -> dict[str, str]:
+    if not site_name:
+        return message
+    return {**message, "subject": notify.subject(f"[{site_name}] {message['subject'].removeprefix('[LLMOps portal] ')}")}
 
 
 def _send_daily_once(d: Deps, c: Check) -> bool:
     """Write the day's marker (create-only); only the writer sends. Returns whether this call sent the message."""
     record = {"date": c.today, "release": c.release_on_site, "radarAsOf": c.radar_as_of, "at": datetime.now(ZoneInfo("UTC")).isoformat()}
     try:
-        d.state.put(_marker(c.today), json.dumps(record).encode(), content_type="application/json", if_none_match=True)
+        d.state.put(_marker(c.today, d.site_name), json.dumps(record).encode(), content_type="application/json", if_none_match=True)
     except Conflict:
         return False
-    d.publish(daily_message(c, d.site_url, d.runs(c.today)))
+    d.publish(_tagged(daily_message(c, d.site_url, d.runs(c.today)), d.site_name))
     return True
 
 
@@ -241,12 +249,12 @@ def handle_amplify(event: dict, d: Deps) -> dict:
     detail = detail if isinstance(detail, dict) else {}
     status = detail.get("jobStatus")
     if status == "FAILED":
-        d.publish(build_failed_message(detail, d.site_url))
+        d.publish(_tagged(build_failed_message(detail, d.site_url), d.site_name))
         return {"result": "build-failed-notified"}
     if status != "SUCCEED":
         return {"result": "ignored", "jobStatus": notify.clean(status, 20)}
     today = today_in(d.tz, d.now() if d.now else None)
-    if d.state.exists(_marker(today)):
+    if d.state.exists(_marker(today, d.site_name)):
         return {"result": "already-notified", "date": today}
     c = check_site(d.site_url, d.data, d.fetch, today)
     if not c.ok:  # e.g. a build after the cloud runs but before today's digest: the deadline check reports if it stays so
@@ -256,12 +264,12 @@ def handle_amplify(event: dict, d: Deps) -> dict:
 
 def handle_deadline(d: Deps) -> dict:
     today = today_in(d.tz, d.now() if d.now else None)
-    if d.state.exists(_marker(today)):
+    if d.state.exists(_marker(today, d.site_name)):
         return {"result": "already-notified", "date": today}
     c = check_site(d.site_url, d.data, d.fetch, today)
     if c.ok:
         return {"result": "notified" if _send_daily_once(d, c) else "already-notified", "date": today}
-    d.publish(incomplete_message(c, d.site_url, d.runs(today)))
+    d.publish(_tagged(incomplete_message(c, d.site_url, d.runs(today)), d.site_name))
     return {"result": "incomplete-notified", "problems": c.problems[:5]}
 
 
@@ -281,6 +289,7 @@ def _deps_from_env() -> Deps:  # pragma: no cover - wiring, exercised in AWS
         site_url=site, data=open_store(os.environ["DATA_URI"]), state=open_store(os.environ["STATE_URI"]),
         publish=lambda m: sns.publish(TopicArn=topic, Subject=m["subject"], Message=m["message"]),
         fetch=http_fetcher(auth), tz=tz, runs=(lambda today: todays_runs(sfn, sm, tz, today)) if sm else (lambda today: []),
+        site_name=os.environ.get("SITE_NAME", ""),
     )
 
 

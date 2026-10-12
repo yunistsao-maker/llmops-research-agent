@@ -129,7 +129,7 @@ PUBLISHABLE = (
     "data/sources.json", "data/catalog.json", "data/lifecycle.json", "data/litellm.json", "data/requirements.json",
     "data/digests/*.json", "data/models/*.json", "data/open-models.json",
     "data/internal/platform-inventory*.json",
-    "runs/compat/*.json", "runs/perf/*.json",
+    "runs/compat/*.json", "runs/perf/*.json", "runs/security/*.json",
     "config/litellm.example.yaml",
 )
 
@@ -258,6 +258,7 @@ def ui_index(files: dict[str, bytes]) -> dict[str, Any]:
         "models": [n[:-5] for n in names("data/models")],
         "compatRuns": names("runs/compat"),
         "perfRuns": names("runs/perf"),
+        "securityRuns": names("runs/security"),
         "hasInventory": "data/internal/platform-inventory.json" in files,
     }
 

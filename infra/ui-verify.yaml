@@ -36,6 +36,13 @@ Parameters:
     Type: String
     AllowedPattern: "^https://[^\\s?#]+$"
     Description: The branch URL people open (for example https://main.<appid>.amplifyapp.com). Not the data location's URL.
+  SiteName:
+    Type: String
+    Default: ""
+    AllowedPattern: "^[a-z0-9-]{0,20}$"
+    Description: >-
+      Optional - set when a second portal reads the same data location (e.g. "clean" for the clean edition): that
+      portal then gets its own once-a-day message, tagged with this name.
   SiteAuthSecretArn:
     Type: String
     Default: ""
@@ -157,6 +164,7 @@ Resources:
           STATE_URI: !Sub "s3://${DataBucketName}/pipeline/"
           STATE_MACHINE_ARN: !Ref StateMachineArn
           SITE_AUTH_SECRET_ARN: !Ref SiteAuthSecretArn
+          SITE_NAME: !Ref SiteName
           TIMEZONE: !Ref ScheduleTimezone
 
   DeadlineFunction:
@@ -180,6 +188,7 @@ Resources:
           STATE_URI: !Sub "s3://${DataBucketName}/pipeline/"
           STATE_MACHINE_ARN: !Ref StateMachineArn
           SITE_AUTH_SECRET_ARN: !Ref SiteAuthSecretArn
+          SITE_NAME: !Ref SiteName
           TIMEZONE: !Ref ScheduleTimezone
 
   OnAmplifyDeployment:

@@ -1969,3 +1969,14 @@ def test_the_radar_editor_s_curation_suggestions_reach_the_approver():
     text = N._proposal_block(info)
     assert "Radar 整理建議" in text and "  - close：" in text and "no change" not in text
     assert "curation" not in P.brief({"id": "prop-2", "ops": [], "checked": ["plain string"]})
+
+
+def test_a_full_security_run_with_prompt_text_is_never_published():
+    """sec_suite.py keeps the full run (every prompt and response, harmful-request datasets among them) on the tester's machine;
+    only the aggregate (--publish-summary) may go into a release, whatever the schema of the day says."""
+    schema = {"definitions": {"SecurityRunSummary": {"type": "object"}}}
+    summary = {"schema": "security-run/v1", "runId": "r", "items": []}
+    full = {**summary, "cases": [{"prompt": ["..."], "response": "..."}]}
+    ok = P.tool_file_problems(schema, {"runs/security/r.json": json.dumps(summary).encode()})
+    bad = P.tool_file_problems(schema, {"runs/security/r.json": json.dumps(full).encode()})
+    assert ok == [] and len(bad) == 1 and bad[0].where == "/cases" and "--publish-summary" in bad[0].message
