@@ -54,11 +54,11 @@ def test_the_index_matches_what_the_ui_build_step_used_to_generate():
     """web/scripts/sync-data.mjs listed the *.json files directly inside each folder, sorted, digests/models without extension."""
     files = {**snapshot_tree(), "data/digests/2026-10-05.json": b"{}", "data/digests/notes.txt": b"x", "data/digests/old/2025-01-01.json": b"{}",
              "data/models/gpt-6-sol.json": b"{}", "data/models/claude-opus-5-5.json": b"{}", "runs/perf/b.json": b"{}", "runs/perf/a.json": b"{}",
-             "runs/security/20261012T215504-494d13.json": b"{}"}
+             "runs/security/20261012T215504-494d13.json": b"{}", "runs/security/20261012T215504-494d13.cases.json": b"{}"}
     assert R.ui_index(files) == {
         "digests": ["2026-09-24", "2026-10-05"], "models": ["claude-opus-5-5", "gpt-6-sol"],
         "compatRuns": ["example-mock.json"], "perfRuns": ["a.json", "b.json", "example-mock.json"],
-        "securityRuns": ["20261012T215504-494d13.json"], "hasInventory": False,
+        "securityRuns": ["20261012T215504-494d13.json"], "securityCases": ["20261012T215504-494d13.cases.json"], "hasInventory": False,
     }
     assert R.ui_index({**files, "data/internal/platform-inventory.json": b"{}"})["hasInventory"] is True
 

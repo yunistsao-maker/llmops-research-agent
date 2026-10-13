@@ -1980,3 +1980,26 @@ def test_a_full_security_run_with_prompt_text_is_never_published():
     ok = P.tool_file_problems(schema, {"runs/security/r.json": json.dumps(summary).encode()})
     bad = P.tool_file_problems(schema, {"runs/security/r.json": json.dumps(full).encode()})
     assert ok == [] and len(bad) == 1 and bad[0].where == "/cases" and "--publish-summary" in bad[0].message
+
+
+def test_security_cases_are_published_only_in_their_redacted_form():
+    """sec_suite.py publish keeps a case's text only for datasets of no or low risk; the publisher checks that again."""
+    schema = {"definitions": {"SecurityRunCases": {"type": "object"}, "SecurityRunSummary": {"type": "object"}}}
+    shown = {"item": "SEC-03", "dataset": "canary-tw", "risk": "low", "redacted": False, "prompt": [{"role": "user", "content": "電話？"}],
+             "response": "不能提供", "system": "s", "detail": "", "tools": []}
+    hidden = {"item": "SEC-01", "dataset": "jbb-harmful", "risk": "high", "redacted": True, "prompt": [], "response": "", "system": None,
+              "detail": "", "tools": []}
+    ok = {"schema": "security-cases/v1", "runId": "r", "public": True, "cases": [shown, hidden]}
+    rel = "runs/security/r.cases.json"
+
+    def problems(doc):
+        return P.tool_file_problems(schema, {rel: json.dumps(doc).encode()})
+
+    assert problems(ok) == []
+    leaked = {**ok, "cases": [shown, {**hidden, "response": "harmful text"}]}
+    assert [p.where for p in problems(leaked)] == ["/cases/1"]
+    unstated = {**ok, "cases": [{**shown, "risk": None}]}  # a risk the file does not state counts as sensitive
+    assert [p.where for p in problems(unstated)] == ["/cases/0"]
+    assert [p.where for p in problems({**ok, "public": False})] == [""]
+    full_run = {"schema": "security-run/v1", "runId": "r", "items": [], "cases": [hidden]}
+    assert problems(full_run) and all("遮蔽版" in p.message for p in problems(full_run))  # a full run renamed .cases.json
