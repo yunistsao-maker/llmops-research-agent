@@ -166,3 +166,25 @@ def test_everything_the_portal_validator_rejects_is_rejected_by_the_port(copy_of
         assert mine, f"the agent's validator accepted {mutate.__name__} on {path.name} but the portal's rejects it:\n{out}"
         return
     pytest.skip(f"{target} has nothing {mutate.__name__} applies to")
+
+
+def test_merges_are_matched_the_way_the_radar_matches_titles():
+    """``apply.merge_key`` is a port of the portal's ``tools/build_radar.py`` ``norm``: a `merges` title the agent and the
+    publisher accept is one the Radar folds into the entry, and one they refuse is one it would not find."""
+    import importlib.util
+
+    from research.apply import merge_key
+
+    path = Path(REPO).resolve() / "tools" / "build_radar.py"
+    if not path.is_file():
+        pytest.skip("PORTAL_REPO has no tools/build_radar.py")
+    spec = importlib.util.spec_from_file_location("portal_build_radar", path)
+    radar = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(radar)  # type: ignore[union-attr]
+    texts = ["【10-06 補充】ＧＰＴ-6 Sol／Luna：價格「調降」！", "Azure o 系列統一在 2026-11-19 退役", "  A　B\t—– c…  ", "【2026-10-06 補充：來源更新】x", ""]
+    for p in sorted((Path(REPO).resolve() / "data" / "digests").glob("*.json")):
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        for section in (*radar.SECTIONS, "actionItems"):
+            texts += [item.get("title") or item.get("action") or "" for item in doc.get(section, [])]
+    assert len(texts) > 5
+    assert [merge_key(t) for t in texts] == [radar.norm(t) for t in texts]

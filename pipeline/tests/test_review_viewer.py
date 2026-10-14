@@ -350,6 +350,28 @@ def test_everything_a_digest_holds_is_on_the_screen(view):
     assert not wrong and not any(e.inner_text().startswith("digest 的其他內容") for e in page.query_selector_all("#out h2"))
 
 
+def test_what_marks_an_entry_is_drawn_with_it(view):
+    """An entry's topic, its `check` (a coverage note, not news) and the earlier entries it folds in (`merges`) are
+    published with it: they are drawn on its card, and a yes / no the layout draws is not listed again among "the rest"."""
+    doc = copy.deepcopy(RUN)
+    digest = doc["proposal"]["digest"]
+    digest["newModels"][0].update(topic="new-models:model-x", check=True, merges=["Model X 預告", "Model X（預覽）"])
+    digest["actionItems"][0].update(topic="lifecycle:model-x", merges=["更新 EOL 日期（前期項目）"])
+    page, wrong = view(doc)
+    assert not wrong
+    text = " ".join(shown_outside_the_raw_json(page).split())
+    for expected in ("主題：new-models:model-x", "涵蓋紀錄：查過、沒有變化", "併入先前的項目", "Model X 預告", "Model X（預覽）",
+                     "主題：lifecycle:model-x", "更新 EOL 日期（前期項目）"):
+        assert expected in text, expected
+    assert not any(e.inner_text().startswith("digest 的其他內容") for e in page.query_selector_all("#out h2"))
+    # a `check` of another value is shown as it is; a yes / no the layout has no place for is still listed
+    digest["newModels"][0].update(check=False, breaking=True)
+    page, wrong = view(doc)
+    assert not wrong and "check：false" in " ".join(shown_outside_the_raw_json(page).split())
+    rest = page.evaluate("[...document.querySelectorAll('#out h2')].find(e => e.innerText.startsWith('digest 的其他內容')).nextElementSibling.innerText")
+    assert "newModels[0].breaking" in rest and "newModels[0].check" not in rest, rest
+
+
 def test_flags_of_a_kind_the_page_has_no_sentence_for_are_shown_too(view):
     doc = copy.deepcopy(RUN)
     doc["proposal"].setdefault("validation", {})["flags"] = {"digestNotReread": ["lifecycleChanges[0]: Foo"], "somethingNew": ["x: y"], "single": "just text"}

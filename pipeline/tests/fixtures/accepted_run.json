@@ -1,9 +1,9 @@
 {
  "type": "result",
  "status": "accepted",
- "runId": "run-20261002T030000Z-1c496e",
+ "runId": "run-20261002T030000Z-26269a",
  "finishedAt": "2026-10-02T03:00:00Z",
- "elapsedSeconds": 0.2,
+ "elapsedSeconds": 0.3,
  "stopReason": "proposal_accepted",
  "usage": {
   "inputTokens": 50,
@@ -36,7 +36,7 @@
  },
  "proposal": {
   "schema": "llmops-research-proposal/v1",
-  "id": "prop-20261002T030000Z-1169b48e",
+  "id": "prop-20261002T030000Z-7dd4e9c6",
   "createdAt": "2026-10-02T03:00:00Z",
   "today": "2026-10-02",
   "task": {
@@ -48,8 +48,17 @@
    "manifest": {
     "kind": "release",
     "source": "/data/portal",
-    "releaseId": "20261002T010000Z-5341fc8c",
-    "publishedAt": "2026-10-02T01:00:00Z"
+    "releaseId": "20261002T010000Z-1e6fcc45",
+    "publishedAt": "2026-10-02T01:00:00Z",
+    "recentReleases": [
+     {
+      "releaseId": "20261002T010000Z-1e6fcc45",
+      "publishedAt": "2026-10-02T01:00:00Z",
+      "kind": "bootstrap",
+      "summary": "第一個 release（由 portal checkout 建立）",
+      "changed": 10
+     }
+    ]
    },
    "sample": false,
    "asOf": "2026-10-01"

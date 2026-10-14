@@ -89,6 +89,11 @@ portal/
 - schema 本身（`schema/llmops.schema.json`）跟著資料走，放在每個 release 裡；agent 驗證提案用的是**上線中那一版**的 schema，不是它自己帶的。
 - 改 schema 的順序：先 `portalctl pull`（讓 checkout 對齊上線的資料）→ 在 portal repo 改 `schema/types.ts` → `npm run schema` 產生
   `llmops.schema.json` → `portalctl push`（會用新 schema 驗證全部資料）。只改 schema 時可以不 pull：`portalctl push --only schema`。
+- **新欄位要 agent 寫的時候，上線順序是 schema → Lambda bundle → agent。** 例：digest 項目與行動項目的 `topic`／`check`／`merges`。
+  (1) portal repo 加上這三個欄位的 schema merge 之後，先 `portalctl push --only schema --portal ../llmops-portal`：agent 用上線中的 schema 驗證提案，
+  schema 還不認得這些欄位時，帶著它們的 digest 會被 agent 與發布端的 schema 檢查擋下（`additionalProperties: false`）。
+  (2) 再部署新的 Lambda bundle（`build_lambdas.py --upload` → 更新 pipeline stack）：發布端重新套用時檢查 `merges` 是不是先前項目的標題；
+  舊的 bundle 不檢查，而 agent 不拿 `merges` 裡的日期對照引文，就是因為發布端會再確認一次。(3) 最後 `agentcore deploy`：新的 agent 才會寫這些欄位。
 
 ## 3. 一次更新怎麼走（state machine）
 
@@ -165,6 +170,7 @@ agent 的輸出只是**提案**。發布流程不信任它：用和 agent 相同
 | operation 建立在同一份提案裡前一個 operation 的結果上：改它剛新增或改過的東西、在清單被動過之後用位置指定 | 「原值」是對照今天的資料記錄的；這樣寫的話，顯示給人看的和實際被取代的就不是同一個東西 |
 | operation 不是 `add`／`replace`／`remove`（沒有 `create`），或它的對象是 `sources.json`、既有的 digest、整個檔案、`asOf`／`generatedAt`／`schema` | 來源只能經由 `newSources` 新增、digest 只能整份新增、時間戳記由流程蓋；agent 的驗證器不會產生這些 operation |
 | 新的 digest 的 `id` 不等於 `periodEnd`、期間在未來、或同一個 id 的 digest 已經存在 | digest 的檔名就是它的日期 |
+| 新的 digest 的項目用 `merges` 列了一個不是先前 digest（期間結束日比它早）**同一區**項目標題的字串（行動項目：先前行動項目的 `action` 原文；比對前做和 portal Radar 相同的正規化） | `merges` 裡的日期不對照引文，因為它們應該是 portal 上已經有、上線時檢查過的標題；對不上的就是沒有人檢查過的文字，Radar 也找不到要合併的項目 |
 | 套用後出現新的 schema 或跨檔檢查問題（含日期時間的格式、連結欄位不是單純的 `https://` 網址、`data/litellm.json` 裡 Gateway 頁面無法解析的版本） | UI 讀到會出錯，或連結會把人帶到別的地方 |
 | 新增的紀錄和清單裡既有的一筆用同一個 key（`id`、`service`、`feature`、`alias`、`scope`、`endpoint`，release 的 `version`） | 頁面會顯示新的那一筆：名義上是新增，實際上改寫了既有的紀錄（包含團隊自己實測過的） |
 | 改到研究資料以外的檔案（`runs/`、`data/internal/`、`config/`、schema） | 那些檔案由人與工具維護 |
@@ -211,7 +217,7 @@ agent 的輸出只是**提案**。發布流程不信任它：用和 agent 相同
 **agent 自己也擋**：上面兩張表的多數情況，agent 的驗證器會先處理，而且用的是同一份程式（重新套用、差異比對、標籤與時間戳記的判斷）。
 會被當成錯誤退回給模型修正的：新增或改動的日期、數字、版本不在**同一則**講這個模型、層級也夠的引文裡（規則在 [agent](agent.md) 第 2 節；引文講的是不是這個模型、程式拿不準的時候不退回，而是接受並加上旗標，由發布端等人）；用了清單裡已經有的 key；
 operation 建立在前一個之上；路徑中途用了位置；單一 operation 改寫太多值；直接寫蓋章欄位；`lastVerified` 不是當天、或它引用的來源一個都沒讀；
-`asOf` 一個來源都沒讀；把引用來源清空或重複引用；文字裡出現這次研究從頭到尾沒看過的連結；team 的測試欄位。
+`asOf` 一個來源都沒讀；把引用來源清空或重複引用；文字裡出現這次研究從頭到尾沒看過的連結；team 的測試欄位；digest 的 `topic` 格式不對、`merges` 不是先前項目的標題。
 通過但會讓提案等人的，驗證器會先警告模型（「這一項會等人核准」），並記在提案裡：`validation.flags`（像指令的文字、沒讀過的網址、對象不確定、沒有引文可對照的值、digest 沒有重新讀取或查無出處的項目），
 讀了幾個來源在 `validation.asOfCoverage` 與 `validation.lastVerifiedCoverage`。
 發布流程對這些紀錄的態度是**只會因為它們變得更嚴格**：差異是自己算的，連結是自己對照 portal 的來源判斷的（研究宣稱讀過哪些頁面，它不採信）；

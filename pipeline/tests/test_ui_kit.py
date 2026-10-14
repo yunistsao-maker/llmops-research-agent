@@ -17,7 +17,7 @@ import pytest
 KIT = Path(__file__).resolve().parents[2] / "ui" / "files" / "src" / "dataSource.ts"
 NODE = shutil.which("node")
 BASE = "https://data.example/tok-1234567890abcdef/"
-LIVE, WITHDRAWN = "20261002T010000Z-5341fc8c", "20261002T033000Z-8ab7fc63"
+LIVE, WITHDRAWN = "20261002T010000Z-1e6fcc45", "20261002T033000Z-8ab7fc63"
 
 DRIVER = """
 const [kit, base, live, paths] = process.argv.slice(2);

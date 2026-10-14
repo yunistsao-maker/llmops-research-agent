@@ -166,10 +166,10 @@ def test_review_mode_holds_the_proposal_until_an_approve_execution(world, monkey
     world.research_finishes(accepted_run(), after_waits=1)
     held = world.start({"trigger": "schedule", "request": {"kind": "weekly"}})
     assert held.status == "SUCCEEDED" and held.output["publish"]["status"] == "pending" and world.live.release_id == base
-    assert world.sent[0]["Subject"] == "[LLMOps portal] approval needed: prop-20261002T030000Z-1169b48e"
+    assert world.sent[0]["Subject"] == "[LLMOps portal] approval needed: prop-20261002T030000Z-7dd4e9c6"
     assert '"action": "approve"' in world.sent[0]["Message"]
 
-    approve = world.start({"action": "approve", "proposalId": "prop-20261002T030000Z-1169b48e", "by": "eunice"})
+    approve = world.start({"action": "approve", "proposalId": "prop-20261002T030000Z-7dd4e9c6", "by": "eunice"})
     assert approve.status == "SUCCEEDED" and approve.path == ["Init", "Route", "Publish", "Notify", "Outcome", "Done"]
     assert world.live.manifest["source"]["approvedBy"] == "eunice" and world.live.manifest["sequence"] == 2
     assert len(world.plane.agent.calls) == 1  # approving does not research again
@@ -378,10 +378,10 @@ def test_an_input_no_step_can_encode_is_still_answered(world, monkeypatch):
     assert world.start({}).status == "SUCCEEDED" and len(P.list_pending(world.plane.control)) == 1
     world.sent.clear()
     half = "日期要再確認 \ud83d"
-    ex = world.start({"action": "discard", "proposalId": "prop-20261002T030000Z-1169b48e", "reason": half, "by": "eunice"})
+    ex = world.start({"action": "discard", "proposalId": "prop-20261002T030000Z-7dd4e9c6", "reason": half, "by": "eunice"})
     assert ex.status == "SUCCEEDED" and ex.path[-2:] == ["Outcome", "Done"], (ex.error, ex.cause)
     assert P.list_pending(world.plane.control) == [] and len(world.sent) == 1
-    decided = json.loads(world.plane.control.get("decided/prop-20261002T030000Z-1169b48e.json").data)
+    decided = json.loads(world.plane.control.get("decided/prop-20261002T030000Z-7dd4e9c6.json").data)
     assert decided["reason"] == "日期要再確認 \ufffd"  # what could be kept of it, kept
     # the same inside a request that IS refused: the refusal is reported like any other
     world.sent.clear()
@@ -418,7 +418,7 @@ def test_after_a_rollback_the_next_scheduled_update_waits_for_a_person(world):
     resumed = world.start({"action": "resume", "by": "eunice"})
     assert resumed.output["publish"]["status"] == "resumed" and resumed.output["publish"]["autoPublishPaused"] is False
     assert world.sent[-1]["Subject"] == "[LLMOps portal] automatic publishing resumed"
-    approved = world.start({"action": "approve", "proposalId": "prop-20261002T030000Z-1169b48e", "by": "eunice"})
+    approved = world.start({"action": "approve", "proposalId": "prop-20261002T030000Z-7dd4e9c6", "by": "eunice"})
     assert approved.output["publish"]["status"] == "published"
 
 

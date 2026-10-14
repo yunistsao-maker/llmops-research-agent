@@ -85,9 +85,9 @@ def test_a_healthy_ui_passes_every_check(smoke):
 
 def test_the_links_that_try_to_leave_the_release():
     index = {"models": ["gpt-6-sol", "b"], "digests": ["2026-10-01", "2026-09-24"]}
-    assert ui_smoke.escaping_routes(index, "20261002T010000Z-5341fc8c") == [
-        "digest/..%2F..%2F..%2F20261002T010000Z-5341fc8c%2Fdata%2Fdigests%2F2026-10-01",
-        "models/..%2F..%2F..%2F20261002T010000Z-5341fc8c%2Fdata%2Fmodels%2Fgpt-6-sol"]
+    assert ui_smoke.escaping_routes(index, "20261002T010000Z-1e6fcc45") == [
+        "digest/..%2F..%2F..%2F20261002T010000Z-1e6fcc45%2Fdata%2Fdigests%2F2026-10-01",
+        "models/..%2F..%2F..%2F20261002T010000Z-1e6fcc45%2Fdata%2Fmodels%2Fgpt-6-sol"]
     assert ui_smoke.escaping_routes({"models": [], "digests": [5]}, "x") == []
 
 

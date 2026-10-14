@@ -154,3 +154,97 @@ def test_a_day_written_short_is_a_day_all_the_same(s):
     # written out, a day nothing states is refused like a date
     rep = validate_proposal(s, proposal([], digest=digest(lifecycleChanges=[entry("Claude 3 Haiku 將於 10 月 20 日退役", sources=src)])))
     assert not rep.ok and "the day 10-20 (month-day, no year)" in errors(rep)
+
+
+# ---------------------------------------------------------------------------------------------- topic, check, merges
+#: an entry of lifecycleChanges, and an action item, of the 2026-09-24 digest the bundled portal holds
+EARLIER = "Azure o 系列統一在 2026-11-19 退役"
+EARLIER_ACTION = "盤點仍呼叫 gemini-2.5-pro / flash / flash-lite 的 GCP 專案：10-20 起新專案與 07-22 之後沒有呼叫過的專案（含 DR / fallback 專案）會被封鎖；遷移期限 Flash-Lite 2027-01-28、Pro / Flash 2027-03-31。先在 GCP 帳號通知核對這些日期。"
+
+
+def test_merges_name_earlier_entries_and_the_dates_in_them_are_not_news(s):
+    """`merges` are the titles of earlier entries this one updates - references, not sentences of this digest.  Read as
+    sentences, the date in an earlier title (checked when it went live) had to be backed again by a quote of today."""
+    card(s)
+    item = entry("Azure o 系列退役時程複查", "官方表未變動。", topic="lifecycle:azure-o-series", merges=[EARLIER])
+    action = {"priority": "P0", "action": "盤點仍呼叫 Gemini 2.5 系列的 GCP 專案（沿用前期項目）。", "topic": "lifecycle:gemini-2.5-pro", "merges": [EARLIER_ACTION]}
+    assert any(a["action"] == EARLIER_ACTION for a in s.portal.docs["data/digests/2026-09-24.json"]["actionItems"])
+    rep = validate_proposal(s, proposal([], digest=digest(lifecycleChanges=[item], actionItems=[action])))
+    assert rep.ok and flags(rep) == {}, (rep.errors, flags(rep))
+    assert rep.proposal["digest"]["lifecycleChanges"][0]["merges"] == [EARLIER] and rep.proposal["digest"]["actionItems"][0]["merges"] == [EARLIER_ACTION]
+    # matched as the portal's Radar matches titles: width, case, punctuation and white space aside - but word for word
+    loose = entry("Azure o 系列退役時程複查", "官方表未變動。", merges=["ＡＺＵＲＥ o 系列統一在 2026/11/19 退役。"])
+    assert validate_proposal(s, proposal([], digest=digest(lifecycleChanges=[loose]))).ok
+    # ... and the dates in the entry's own words are held to a quote as before
+    rep = validate_proposal(s, proposal([], digest=digest(lifecycleChanges=[entry("Azure o 系列將於 2026-11-19 退役", merges=[EARLIER])])))
+    assert not rep.ok and f"{NEW}/title: the date 2026-11-19 is neither in a quote" in errors(rep), rep.errors
+
+
+@pytest.mark.parametrize("where, merges, said", [
+    ("lifecycleChanges", ["Azure o 系列統一在 2026-11-20 退役"], f"{NEW}/merges/0: 'Azure o 系列統一在 2026-11-20 退役' is not the title of an entry of lifecycleChanges"),
+    ("lifecycleChanges", ["Azure o系列統一在 2026-11-19 退役"], f"{NEW}/merges/0"),
+    ("lifecycleChanges", [EARLIER, "Claude Opus 5.5 降價"], f"{NEW}/merges/1: 'Claude Opus 5.5 降價' is not the title of an entry of lifecycleChanges"),
+    ("lifecycleChanges", ["Azure o 系列退役時程複查"], f"{NEW}/merges/0"),  # its own title: an entry of THIS digest is not an earlier one
+    ("actionItems", [EARLIER], "digest/actionItems/0/merges/0: 'Azure o 系列統一在 2026-11-19 退役' is not the action text of an action item"),
+])
+def test_merges_that_name_no_earlier_entry_are_errors(s, where, merges, said):
+    """A title that is not on the portal would be a sentence nobody checked - and the Radar would fold nothing into the entry."""
+    card(s)
+    item = entry("Azure o 系列退役時程複查", "官方表未變動。")
+    action = {"priority": "P1", "action": "Azure o 系列遷移。"}
+    if where == "actionItems":
+        action["merges"] = merges
+    else:
+        item["merges"] = merges
+    rep = validate_proposal(s, proposal([], digest=digest(lifecycleChanges=[item], actionItems=[action])))
+    assert not rep.ok and said in errors(rep) and "copy each" in errors(rep), rep.errors
+    if merges[0].startswith("Azure o 系列統一在 2026-11-20"):
+        assert f"the closest is {EARLIER!r}" in errors(rep)
+
+
+@pytest.mark.parametrize("topic, ok", [
+    ("pricing:claude-sonnet-5-5", True), ("lifecycle:gemini-2.5-pro:vertex", True), ("security:cve-2026-12345", True), ("litellm:v1.102.1", True),
+    ("Pricing:claude-sonnet-5-5", False), ("pricing", False), ("pricing:", False), ("a:b:c:d:e", False), ("pricing:claude sonnet", False),
+    ("pricing:claude-sonnet-5-5\n", False), ("pricing:" + "x" * 100, False), ("pricing_x:y", False), (7, False),
+])
+def test_a_topic_names_the_subject_the_same_way_every_day(s, topic, ok):
+    card(s)
+    item = entry("Bedrock 模型卡複查", "Claude Sonnet 5.5 的模型卡沒有變動。", topic=topic, check=True)
+    for d in (digest(lifecycleChanges=[item]), digest(lifecycleChanges=[entry("Bedrock 模型卡複查")], actionItems=[{"priority": "P2", "action": "持續追蹤。", "topic": topic}])):
+        rep = validate_proposal(s, proposal([], digest=d))
+        assert rep.ok == ok, (topic, rep.errors)
+        if not ok:
+            where = "digest/lifecycleChanges/0" if d["lifecycleChanges"][0].get("topic") is not None else "digest/actionItems/0"
+            assert f"{where}/topic: " in errors(rep) and "is not a topic" in errors(rep), rep.errors
+
+
+def test_a_topic_does_not_lend_its_model_to_a_date(s):
+    """A topic names a model ("lifecycle:gemini-2.5-pro"), but it is not a sentence of the entry: read as one, it made the
+    entry "name" the model - a date the portal has for it, in a sentence that names nobody, waited for a person instead
+    of being refused, and a quote about that model backed a sentence about nothing."""
+    page(s, "gcp-gemini25-notice-1763", html("Gemini 2.5 notice", "This page was read and says nothing new."))
+    src = ("gcp-gemini25-notice-1763",)
+    nobody = entry("Agent Platform 生命週期複查", "2026-10-20 起封鎖新專案。", sources=src, topic="lifecycle:gemini-2.5-pro")
+    rep = validate_proposal(s, proposal([], digest=digest(lifecycleChanges=[nobody])))
+    assert not rep.ok and f"{NEW}/detail: the date 2026-10-20 is neither in a quote" in errors(rep), (rep.errors, flags(rep))
+    named = entry("Agent Platform 生命週期複查", "gemini-2.5-pro 於 2026-10-20 起封鎖新專案。", sources=src, topic="lifecycle:gemini-2.5-pro")
+    rep = validate_proposal(s, proposal([], digest=digest(lifecycleChanges=[named])))
+    assert rep.ok and flags(rep) == {}, (rep.errors, flags(rep))
+    # the same for an action item
+    action = {"priority": "P0", "action": "2026-10-20 前完成切換。", "topic": "lifecycle:gemini-2.5-pro"}
+    rep = validate_proposal(s, proposal([], digest=digest(lifecycleChanges=[entry("Agent Platform 複查", "沒有變動。", sources=src)], actionItems=[action])))
+    assert not rep.ok and "digest/actionItems/0/action: the date 2026-10-20 is not one that an entry of this digest establishes" in errors(rep), rep.errors
+    # a quote about a model the entry does not name still leaves a person to tell what the date is the date of
+    add_quote(s, aws(s), ROW_H3)  # Claude 3 Haiku | ... | 2025-12-01 | 2026-09-12
+    quiet = entry("Bedrock 生命週期頁更新", "表列的退役日期是 2026-09-12。", sources=("aws-bedrock-lifecycle-legacy",), topic="lifecycle:claude-3-haiku")
+    rep = validate_proposal(s, proposal([], digest=digest(lifecycleChanges=[quiet])))
+    assert rep.ok and list(flags(rep)) == ["uncertainSubject"] and "which the entry does not name" in flags(rep)["uncertainSubject"][0], (rep.errors, flags(rep))
+
+
+def test_a_coverage_note_cites_its_sources_like_any_entry(s):
+    """`check: true` says "checked, no change" - which is something this run read, and where."""
+    card(s)
+    rep = validate_proposal(s, proposal([], digest=digest(lifecycleChanges=[entry("Bedrock 模型卡複查", "沒有變動。", sources=(), check=True)])))
+    assert not rep.ok and f"{NEW}: cites no source" in errors(rep), rep.errors
+    rep = validate_proposal(s, proposal([], digest=digest(lifecycleChanges=[entry("Bedrock 模型卡複查", "沒有變動。", check=True, topic="lifecycle:claude-sonnet-5-5")])))
+    assert rep.ok and flags(rep) == {} and rep.proposal["digest"]["lifecycleChanges"][0]["check"] is True, (rep.errors, flags(rep))

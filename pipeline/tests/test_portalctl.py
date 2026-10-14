@@ -16,7 +16,7 @@ from portal_pipeline import releases as R
 from portal_pipeline.storage import DirStore
 
 SFN_ARN = "arn:aws:states:us-east-1:123456789012:stateMachine:llmops-portal-pipeline-update"
-PROP = "prop-20261002T030000Z-1169b48e"
+PROP = "prop-20261002T030000Z-7dd4e9c6"
 
 
 class FakeSfn:

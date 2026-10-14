@@ -42,7 +42,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Iterator
 
-from .apply import MAX_PROPOSAL_VALUES, file_stamp, stage_proposal, too_many_values
+from .apply import DIGEST_NEWS_SECTIONS, MAX_PROPOSAL_VALUES, file_stamp, stage_proposal, too_many_values
 from .clock import iso_now
 from .portal.checks import new_problems, validate_docs
 from .portal.diff import MODIFIED, REMOVED, REORDERED, Change, same
@@ -1478,6 +1478,15 @@ def _check_lifecycle_rules(rep: Report, before: Any, after: Any) -> None:
 
 #: the sections of a digest whose entries report something and cite where it was read
 _DIGEST_SECTIONS = ("lifecycleChanges", "litellm", "newModels", "pricingChanges", "regulatory", "security", "watchlist")
+#: Fields of a digest entry (and of an action item) that say what the entry is, not what happened: the subject it is
+#: about across days (`topic`) and the titles of the earlier entries it updates (`merges` - required to be exactly such
+#: titles by ``apply.merge_problems``).  Neither is a sentence: the dates in them and the models they name back nothing
+#: and are not held to a quote.  (The text checks still read them.  `check`, a coverage note, is a yes / no and is not
+#: read as text at all; one that is text is read like the rest of the entry.)
+_DIGEST_MARKS = ("topic", "merges")
+#: `topic`: "<area>:<subject>[:<aspect>]" - the schema's pattern, read as the browser reads it (no line break at the end)
+_TOPIC = re.compile(r"[a-z0-9][a-z0-9-]*(?::[a-z0-9][a-z0-9._-]*){1,3}")
+_TOPIC_MAX = 100
 
 
 def _named_records(docs: dict[str, Any]) -> list[tuple[Subject, dict]]:
@@ -1609,6 +1618,17 @@ def _digest_backed(key: tuple, find: Finder, said: tuple[frozenset, frozenset], 
     return ("hold", held) if held else ("none", "")
 
 
+def _check_topic(rep: Report, where: str, item: dict) -> None:
+    """The schema says the same (when the live one knows `topic`); this says what a topic is for."""
+    topic = item.get("topic")
+    if topic is None or (isinstance(topic, str) and len(topic) <= _TOPIC_MAX and _TOPIC.fullmatch(topic)):
+        return
+    rep.err(f"{where}/topic: {str(topic)[:120]!r} is not a topic. A topic names the subject of the entry the same way every day, so "
+            "that the portal merges the entries about it into one card: \"<area>:<subject>[:<aspect>]\" in lower case - letters, digits "
+            f"and '-' (after the first ':' also '.' and '_'), 2 to 4 parts, at most {_TOPIC_MAX} characters; the subject is a catalog "
+            "model id, litellm, a CVE id ... (\"pricing:claude-sonnet-5-5\", \"lifecycle:gemini-2-5-pro:vertex\", \"security:cve-2026-1234\")")
+
+
 def _check_digest(session: ResearchSession, rep: Report, digest: dict, staged, url_to_sid: dict[str, str]) -> None:
     """The digest's period was checked when it was staged (``apply.digest_problems``); this is about what it says.
 
@@ -1623,7 +1643,11 @@ def _check_digest(session: ResearchSession, rep: Report, digest: dict, staged, u
     * the headline and the action items sum up the entries: their dates and amounts are the entries', for the same
       model - or, again, the portal's record of the model the sentence is about;
     * a line under ``unverified`` says itself that nobody could confirm it, but it is something the run saw: a date in
-      it that is on no page read in this run waits for a person.
+      it that is on no page read in this run waits for a person;
+    * what marks an entry (``_DIGEST_MARKS``: its `topic`, and the `merges` that name the earlier entries it updates)
+      is not a sentence and backs nothing: a model in a topic is not one the entry names, and the titles in
+      `merges` were checked when they went live - that they are exactly such titles is ``apply.merge_problems``'s
+      business, at staging, so the publisher's replay checks it again.
 
     Everything else a digest says is the model's wording, and no program checks it: see docs/known-issues.md.
     """
@@ -1678,7 +1702,10 @@ def _check_digest(session: ResearchSession, rep: Report, digest: dict, staged, u
                 rep.flag("digestNotReread", f"{where} cites {', '.join(refs[:5])}")
             elif len(read) < len(refs):
                 rep.warn(f"{where}: cites sources that were not read in this run: {sorted(set(refs) - set(read))}")
-            body = {k: v for k, v in item.items() if k != "sources"}
+            marks = _DIGEST_MARKS if section in DIGEST_NEWS_SECTIONS else ()  # (a watchlist item has none: all of it is read)
+            if marks:
+                _check_topic(rep, where, item)
+            body = {k: v for k, v in item.items() if k != "sources" and k not in marks}
             named = holders.named_in(" \n".join(_all_strings(body)))
             title = next((item[k] for k in ("title", "name") if isinstance(item.get(k), str) and item[k].strip()), "")
             evs = list({ev.id: ev for sid in read for ev in quotes.get(sid, [])}.values())
@@ -1716,7 +1743,8 @@ def _check_digest(session: ResearchSession, rep: Report, digest: dict, staged, u
     for n, action in enumerate(digest.get("actionItems") if isinstance(digest.get("actionItems"), list) else []):
         if not isinstance(action, dict):
             continue
-        parts.append((f"digest/actionItems/{n}", {k: v for k, v in action.items() if k not in ("due", "relatedModelIds")}))
+        _check_topic(rep, f"digest/actionItems/{n}", action)
+        parts.append((f"digest/actionItems/{n}", {k: v for k, v in action.items() if k not in ("due", "relatedModelIds", *_DIGEST_MARKS)}))
         related = action.get("relatedModelIds")
         for rid in related if isinstance(related, list) else []:
             if not isinstance(rid, str) or rid not in model_ids:

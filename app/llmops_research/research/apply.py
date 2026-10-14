@@ -17,6 +17,7 @@ import datetime as dt
 import difflib
 import json
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -176,6 +177,96 @@ def digest_problems(digest: Any, today_iso: str) -> list[str]:
     return out
 
 
+#: the sections of a digest whose entries the portal's Radar merges by title (the portal's tools/build_radar.py SECTIONS)
+DIGEST_NEWS_SECTIONS = ("newModels", "lifecycleChanges", "pricingChanges", "litellm", "security", "regulatory")
+#: what one entry's `merges` may list (the schema's maxItems)
+MAX_MERGES = 10
+_MERGE_PROBLEMS = 20  # told one by one; the rest are counted
+_MERGE_HINTS = 5  # problems that get a "did you mean" (each one is a fuzzy search through the earlier titles)
+# the portal's tools/build_radar.py: the "【10-06 補充】" marker of a supplemented digest, and what counts as punctuation
+_MARKER = re.compile(r"【[^】]{0,40}補充[^】]*】")
+_PUNCT = re.compile(r"[\s，,。．.：:；;、（）()「」『』\"'“”‘’!！?？…—–\-/]+")
+
+
+def merge_key(text: str) -> str:
+    """``text`` the way the portal's Radar compares titles and action texts (tools/build_radar.py ``norm``): NFKC, without
+    the marker of a supplemented digest, every run of punctuation and white space one space, lower case."""
+    t = unicodedata.normalize("NFKC", text)
+    t = _MARKER.sub("", t)
+    return _PUNCT.sub(" ", t).strip().lower()
+
+
+def merge_problems(digest: Any, docs: dict[str, Any]) -> list[str]:
+    """`merges` of a new digest that do not name an entry of an earlier one.
+
+    An entry's `merges` lists the titles of entries of the same section in earlier digests that it updates (an action
+    item's, the `action` texts of earlier action items); the portal's Radar folds those into this one.  They are
+    references, not news, so the agent's validator does not hold the dates and amounts in them to a quote - which is
+    only sound while each of them IS the title of an entry the portal already has (and that was checked when it went
+    live).  So every one must be - after the Radar's own normalisation (:func:`merge_key`) - the title of an entry of
+    the same section of a digest in ``docs`` whose period ends before this one's.  Any shape is answered, never raised.
+    """
+    if not isinstance(digest, dict) or not isinstance(docs, dict):
+        return []
+    end = digest.get("periodEnd")
+    if not (isinstance(end, str) and is_date(end)):
+        return []  # digest_problems says what is wrong with the period
+    places = [(section, "title") for section in DIGEST_NEWS_SECTIONS] + [("actionItems", "action")]
+    known: dict[str, dict[str, str]] = {section: {} for section, _field in places}  # section -> merge key -> the text as written
+    for rel, doc in docs.items():
+        if not (isinstance(rel, str) and rel.startswith("data/digests/") and isinstance(doc, dict)):
+            continue
+        when = doc.get("periodEnd")
+        if not (isinstance(when, str) and is_date(when) and when < end):
+            continue
+        for section, field in places:
+            items = doc.get(section)
+            for item in items if isinstance(items, list) else []:
+                key = merge_key(item[field]) if isinstance(item, dict) and isinstance(item.get(field), str) else ""
+                if key:
+                    known[section].setdefault(key, item[field])
+
+    out: list[str] = []
+    untold = 0
+
+    def tell(text: str) -> None:
+        nonlocal untold
+        if len(out) < _MERGE_PROBLEMS:
+            out.append(text)
+        else:
+            untold += 1
+
+    for section, field in places:
+        what = "title" if field == "title" else "action text"
+        of = f"an entry of {section}" if field == "title" else "an action item"
+        items = digest.get(section)
+        for n, item in enumerate(items if isinstance(items, list) else []):
+            if not isinstance(item, dict) or "merges" not in item:
+                continue
+            where = f"digest/{section}/{n}/merges"
+            merges = item["merges"]
+            if not isinstance(merges, list) or not all(isinstance(m, str) for m in merges):
+                tell(f"{where}: must be a list of texts - the exact {what}s of earlier entries this one updates")
+                continue
+            if len(merges) > MAX_MERGES:
+                tell(f"{where}: lists {len(merges)} earlier entries; at most {MAX_MERGES}")
+                continue
+            for k, value in enumerate(merges):
+                key = merge_key(value)
+                if key and key in known[section]:
+                    continue
+                hint = ""
+                if key and len(out) < _MERGE_HINTS:
+                    close = difflib.get_close_matches(key[:300], list(known[section]), n=1, cutoff=0.6)
+                    hint = f" (the closest is {known[section][close[0]][:200]!r})" if close else ""
+                tell(f"{where}/{k}: {value[:200]!r} is not the {what} of {of} in an earlier digest{hint}. `merges` names entries "
+                     f"the portal already has, which this one updates: copy each {what} exactly as it stands in "
+                     "data/digests/<date>.json (lookup_portal shows them), or leave it out")
+    if untold:
+        out.append(f"... and {untold} more `merges` that name no entry of an earlier digest")
+    return out
+
+
 def stage_proposal(
     portal: PortalData,
     *,
@@ -263,7 +354,8 @@ def stage_proposal(
         else:
             entry = copy.deepcopy(digest)
             entry["generatedAt"] = now_iso
-            problems = digest_problems(entry, today_iso)
+            # `merges` must name entries the portal had before this proposal: checked here, so a replay checks it again
+            problems = digest_problems(entry, today_iso) + merge_problems(entry, portal.docs)
             errors.extend(problems)
             if not problems:
                 staged.docs[key] = entry

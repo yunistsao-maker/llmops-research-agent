@@ -710,6 +710,54 @@ def test_a_digest_is_checked_and_stamped_wherever_it_is_staged(portal):
         assert any("periodEnd must be a date" in p for p in problems) and not any("2031" in k for k in staged.docs), end
 
 
+def test_merges_are_checked_wherever_a_digest_is_staged(portal):
+    """`merges` names the earlier entries an entry updates.  The agent does not hold the dates in them to a quote, because
+    they are titles the portal already has - so the publisher's replay checks that they are, and refuses what is not."""
+    from research.apply import merge_key, merge_problems
+
+    earlier = "Azure o 系列統一在 2026-11-19 退役"  # lifecycleChanges of the 2026-09-24 digest
+    action = portal.docs["data/digests/2026-09-24.json"]["actionItems"][3]["action"]
+
+    def digest(lifecycle=(), actions=(), **extra):
+        return {"schema": "digest/v1", "id": "2026-10-02", "locale": "zh-TW", "periodStart": "2026-09-25", "periodEnd": "2026-10-02",
+                "generatedAt": "2026-10-02T03:00:00Z", "headline": "h", "newModels": [], "lifecycleChanges": list(lifecycle), "pricingChanges": [],
+                "litellm": [], "security": [], "regulatory": [], "actionItems": list(actions), "watchlist": [], "unverified": [], **extra}
+
+    item = {"title": "Azure o 系列退役時程複查", "detail": "沒有變動。", "impact": "low", "sources": [{"id": "ms-foundry-retirement-schedule"}],
+            "topic": "lifecycle:azure-o-series", "check": True}
+    good = digest([dict(item, merges=[earlier, "【10-01 補充】ＡＺＵＲＥ o 系列統一在 2026/11/19 退役。"])],
+                  [{"priority": "P0", "action": "Azure o 系列遷移。", "topic": "lifecycle:azure-o-series", "merges": [action]}])
+    staged, problems = apply_saved_proposal(portal, saved(portal, digest=good))
+    assert problems == [] and staged.docs["data/digests/2026-10-02.json"]["lifecycleChanges"][0]["merges"][0] == earlier, problems
+    later = copy.deepcopy(portal)
+    later.docs["data/digests/2026-10-05.json"] = dict(digest([dict(item, title="只在較晚的 digest 裡")]), id="2026-10-05", periodEnd="2026-10-05")
+    for merges, actions, said in (
+        (["Azure o 系列統一在 2026-11-20 退役"], [], "digest/lifecycleChanges/0/merges/0: 'Azure o 系列統一在 2026-11-20 退役' is not the title of an entry of lifecycleChanges in an earlier digest"),
+        (["Claude Opus 5.5 降價"], [], "digest/lifecycleChanges/0/merges/0"),                       # an entry of another section
+        (["Azure o 系列退役時程複查"], [], "digest/lifecycleChanges/0/merges/0"),                    # this digest's own entry
+        (["只在較晚的 digest 裡"], [], "digest/lifecycleChanges/0/merges/0"),                         # a later digest's
+        ([""], [], "digest/lifecycleChanges/0/merges/0"), (["。"], [], "digest/lifecycleChanges/0/merges/0"),
+        ("Azure o 系列統一在 2026-11-19 退役", [], "digest/lifecycleChanges/0/merges: must be a list of texts"),
+        ([earlier, 7], [], "digest/lifecycleChanges/0/merges: must be a list of texts"),
+        ([earlier] * 11, [], "digest/lifecycleChanges/0/merges: lists 11 earlier entries; at most 10"),
+        ([], [{"priority": "P0", "action": "a", "merges": [earlier]}], "digest/actionItems/0/merges/0: 'Azure o 系列統一在 2026-11-19 退役' is not the action text"),
+    ):
+        proposal = saved(portal, digest=digest([dict(item, merges=merges)], actions))
+        staged, problems = apply_saved_proposal(later, proposal)
+        assert any(said in p for p in problems) and "data/digests/2026-10-02.json" not in staged.docs, (merges, problems)
+    # bounded: whatever a proposal holds, what is told about it is a few lines, and only a few get a fuzzy search
+    many = digest([dict(item, merges=[f"不存在的標題 {n}" for n in range(10)]) for _ in range(30)])
+    problems = merge_problems(many, portal.docs)
+    assert len(problems) == 21 and problems[-1] == "... and 280 more `merges` that name no entry of an earlier digest", problems[-1]
+    assert sum("the closest is" in p for p in problems) <= 5
+    # whatever shape the digest or the data has
+    for odd in (None, 7, {"periodEnd": 5, "lifecycleChanges": [{"merges": ["x"]}]}, {"periodEnd": "2026-10-02", "lifecycleChanges": "x", "actionItems": [None, 3]}):
+        merge_problems(odd, portal.docs)
+    assert merge_problems(good, {"data/digests/x.json": [], 5: {}, "data/digests/y.json": {"periodEnd": None, "lifecycleChanges": [{"title": 3}]}}) != []
+    # the portal's Radar normalisation (tools/build_radar.py norm; test_portal_parity.py compares the two)
+    assert merge_key("【10-06 補充】ＧＰＴ-6 Sol／Luna：價格「調降」！") == "gpt 6 sol luna 價格 調降"
+
+
 def test_create_is_not_an_operation(portal):
     doc = saved(portal, [{"file": "data/models/new-model.json", "op": "create", "path": "", "value": {"schema": "deepdive/v1"}}])
     staged, problems = apply_saved_proposal(portal, doc)

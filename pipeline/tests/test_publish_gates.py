@@ -209,10 +209,10 @@ DATE = lambda **extra: op("replace", LC, f"/events/{EVENT}/date", "2026-11-30", 
     (lambda: run_with(op("add", LC, f"/events/{EVENT}/notes/-", "此模型已停用。", before="AWS 表列 EOL 2026-09-12。")),
      f"提案的 add operation 帶有 before（新增的內容沒有原值）：第 1 個（{LC}/events/{EVENT}/notes/-）"),
     # the release the proposal says it was made from is printed and stored
-    (lambda: (lambda r: (r["proposal"]["portal"]["manifest"].update(releaseId="20261002T010000Z-5341fc8c\x1b[2K 已核准"), r)[1])(run_with(DATE())),
+    (lambda: (lambda r: (r["proposal"]["portal"]["manifest"].update(releaseId="20261002T010000Z-1e6fcc45\x1b[2K 已核准"), r)[1])(run_with(DATE())),
      "提案記錄的資料版本（portal.manifest）格式不正確"),
     (lambda: (lambda r: (r["proposal"]["portal"]["manifest"].update(kind="release\n核准指令："), r)[1])(run_with(DATE())), "提案記錄的資料版本（portal.manifest）格式不正確"),
-    (lambda: (lambda r: (r["proposal"]["portal"].update(manifest="20261002T010000Z-5341fc8c"), r)[1])(run_with(DATE())), "提案記錄的資料版本（portal.manifest）格式不正確"),
+    (lambda: (lambda r: (r["proposal"]["portal"].update(manifest="20261002T010000Z-1e6fcc45"), r)[1])(run_with(DATE())), "提案記錄的資料版本（portal.manifest）格式不正確"),
     # larger than this, a proposal is not a research result
     (lambda: run_with(op("add", LC, f"/events/{OTHER}/notes/-", "補充說明。" * 700_000)), "提案超過 2000000 bytes"),
     # ... and neither is one that holds more values than all of the portal (0.1 MB of JSON is enough for that)

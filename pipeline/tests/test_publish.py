@@ -174,10 +174,10 @@ def test_an_accepted_proposal_becomes_a_new_release(plane):
         if rel not in outcome.changes["modified"]:
             assert after.files[rel] == before.files[rel], rel
     # the pointer says where the data came from, and keeps the history
-    assert after.manifest["source"] == {"kind": "agent", "by": "schedule", "proposalId": "prop-20261002T030000Z-1169b48e",
+    assert after.manifest["source"] == {"kind": "agent", "by": "schedule", "proposalId": "prop-20261002T030000Z-7dd4e9c6",
                                         "proposalSha256": P.proposal_sha256(accepted_run()["proposal"]), "runId": accepted_run()["runId"]}
     assert [h["kind"] for h in after.manifest["history"]] == ["agent", "bootstrap"]
-    assert after.manifest["history"][0]["proposalId"] == "prop-20261002T030000Z-1169b48e" and after.manifest["history"][0]["changed"] == 2
+    assert after.manifest["history"][0]["proposalId"] == "prop-20261002T030000Z-7dd4e9c6" and after.manifest["history"][0]["changed"] == 2
     assert after.manifest["previousReleaseId"] == base.release_id
     # the release carries its own audit trail: what changed, from what to what, and the quote that backs it
     ops = after.meta["operations"]
@@ -239,7 +239,7 @@ def test_a_proposal_made_against_sample_data_is_refused(plane):
     outcome = P.publish_proposal(plane.data, record, control=plane.control, now=T1)
     assert outcome.status == "rejected" and "SAMPLE" in outcome.reasons[0] and "PORTAL_DATA_URI" in outcome.reasons[0]
     assert live(plane).release_id == base.release_id
-    assert json.loads(plane.control.get("rejected/prop-20261002T030000Z-1169b48e.json").data)["reasons"] == outcome.reasons
+    assert json.loads(plane.control.get("rejected/prop-20261002T030000Z-7dd4e9c6.json").data)["reasons"] == outcome.reasons
 
 
 @pytest.mark.parametrize("change, expect", [
@@ -311,17 +311,17 @@ def test_in_review_mode_every_proposal_waits_for_approval(plane):
     assert outcome.changes["modified"] == ["data/lifecycle.json", "data/sources.json"]
     assert live(plane).release_id == base.release_id  # nothing is live yet
     pending = P.list_pending(plane.control)
-    assert [p["proposalId"] for p in pending] == ["prop-20261002T030000Z-1169b48e"]
+    assert [p["proposalId"] for p in pending] == ["prop-20261002T030000Z-7dd4e9c6"]
     assert pending[0]["baseReleaseId"] == base.release_id and "record" not in pending[0]
 
-    approved = P.approve(plane.data, plane.control, "prop-20261002T030000Z-1169b48e", actor="eunice", policy=P.Policy(mode="review"), now=T2)
+    approved = P.approve(plane.data, plane.control, "prop-20261002T030000Z-7dd4e9c6", actor="eunice", policy=P.Policy(mode="review"), now=T2)
     assert approved.status == "published"
     assert live(plane).manifest["source"]["approvedBy"] == "eunice" and event_date(live(plane).files) == "2026-11-30"
     assert P.list_pending(plane.control) == []
-    decided = json.loads(plane.control.get("decided/prop-20261002T030000Z-1169b48e.json").data)
+    decided = json.loads(plane.control.get("decided/prop-20261002T030000Z-7dd4e9c6.json").data)
     assert (decided["decision"], decided["state"], decided["by"], decided["releaseId"]) == ("approve", "done", "eunice", approved.release_id)
     with pytest.raises(R.ReleaseError, match="沒有待核准的提案"):
-        P.approve(plane.data, plane.control, "prop-20261002T030000Z-1169b48e", actor="eunice")
+        P.approve(plane.data, plane.control, "prop-20261002T030000Z-7dd4e9c6", actor="eunice")
 
 
 @pytest.mark.parametrize("policy, tweak, expect", [
@@ -375,17 +375,17 @@ def test_approval_does_not_bypass_validation(plane):
     newer = edit(live(plane).files, "data/lifecycle.json",
                  lambda d: next(e for e in d["events"] if e["id"] == EVENT).update(date="2026-12-05"))
     assert P.publish_tree(plane.data, newer, base_release=base.release_id, actor="eunice", now=T1).status == "published"
-    outcome = P.approve(plane.data, plane.control, "prop-20261002T030000Z-1169b48e", actor="eunice", now=T2)
+    outcome = P.approve(plane.data, plane.control, "prop-20261002T030000Z-7dd4e9c6", actor="eunice", now=T2)
     assert outcome.status == "rejected" and event_date(live(plane).files) == "2026-12-05"
-    assert [p["proposalId"] for p in P.list_pending(plane.control)] == ["prop-20261002T030000Z-1169b48e"]  # still there, to be discarded
+    assert [p["proposalId"] for p in P.list_pending(plane.control)] == ["prop-20261002T030000Z-7dd4e9c6"]  # still there, to be discarded
 
 
 def test_a_pending_proposal_can_be_discarded(plane):
     base = plane.bootstrap()
     P.publish_proposal(plane.data, accepted_run(), policy=P.Policy(mode="review"), control=plane.control, now=T1)
-    outcome = P.discard(plane.control, "prop-20261002T030000Z-1169b48e", actor="eunice", reason="日期要再確認", now=T2)
+    outcome = P.discard(plane.control, "prop-20261002T030000Z-7dd4e9c6", actor="eunice", reason="日期要再確認", now=T2)
     assert outcome.status == "discarded" and P.list_pending(plane.control) == [] and live(plane).release_id == base.release_id
-    decided = json.loads(plane.control.get("decided/prop-20261002T030000Z-1169b48e.json").data)
+    decided = json.loads(plane.control.get("decided/prop-20261002T030000Z-7dd4e9c6.json").data)
     assert (decided["decision"], decided["state"], decided["by"], decided["reason"]) == ("discard", "done", "eunice", "日期要再確認")
     for bad in ("prop-unknown", "../manifest", ""):
         with pytest.raises(R.ReleaseError):
@@ -724,7 +724,7 @@ def test_a_replace_that_deletes_data_waits_for_a_person(plane, build, where, cou
     reason = next((r for r in outcome.reasons if "會刪除資料" in r), "")
     assert outcome.status == "pending" and f"（{count} 處）" in reason and where in reason, outcome.to_state()
     assert outcome.review.count("removed") == count and live(plane).release_id == base.release_id
-    plane.control.delete("pending/prop-20261002T030000Z-1169b48e.json")
+    plane.control.delete("pending/prop-20261002T030000Z-7dd4e9c6.json")
     allowed = P.publish_proposal(plane.data, record, policy=P.Policy(allow_remove=True, max_op_changes=1000), control=plane.control, now=T1)
     assert allowed.status in ("published", "rejected")  # (the schema may still object; the removal no longer holds it)
     assert not any("會刪除資料" in r for r in allowed.reasons)
@@ -747,7 +747,7 @@ def test_the_limit_counts_changes_not_operations(plane):
     outcome = P.publish_proposal(plane.data, run_with(op("replace", "data/lifecycle.json", "/events", everything)), control=plane.control, now=T1)
     assert outcome.status == "pending" and any("實際會變更 66 處（修改 66、新增 0、刪除 0），超過自動發布的上限 60" in r for r in outcome.reasons), outcome.reasons
     # one operation, three values
-    plane.control.delete("pending/prop-20261002T030000Z-1169b48e.json")
+    plane.control.delete("pending/prop-20261002T030000Z-7dd4e9c6.json")
     three = run_with(op("replace", "data/lifecycle.json", f"/events/{EVENT}/notes", next(e for e in events() if e["id"] == EVENT)["notes"] + ["一。", "二。", "三。"]))
     tight = P.publish_proposal(plane.data, three, policy=P.Policy(max_ops=2), control=plane.control, now=T1)
     assert tight.status == "pending" and any("實際會變更 3 處" in r for r in tight.reasons) and not any("個 operation，超過" in r for r in tight.reasons)
@@ -960,7 +960,7 @@ def test_the_agents_flags_only_ever_make_the_publisher_stricter(plane):
     record["proposal"]["validation"]["flags"] = {"unseenUrls": ["https://evil.example/landing"], "instructionLikeText": []}
     outcome = P.publish_proposal(plane.data, record, control=plane.control, now=T1)
     assert outcome.status == "pending" and any("不是 portal 來源的連結" in r and "https://evil.example/landing" in r for r in outcome.reasons), outcome.reasons
-    plane.control.delete("pending/prop-20261002T030000Z-1169b48e.json")
+    plane.control.delete("pending/prop-20261002T030000Z-7dd4e9c6.json")
     # nothing flagged holds nothing ...
     for nothing in ({}, None, {"unseenUrls": []}, {"instructionLikeText": [], "somethingNew": []}, [], "", 0):
         record["proposal"]["validation"]["flags"] = nothing
@@ -973,7 +973,7 @@ def test_the_agents_flags_only_ever_make_the_publisher_stricter(plane):
         assert len(held) >= 1, odd
         outcome = P.publish_proposal(plane.data, record, control=plane.control, now=T1)
         assert outcome.status == "pending", (odd, outcome.reasons)
-        plane.control.delete("pending/prop-20261002T030000Z-1169b48e.json")
+        plane.control.delete("pending/prop-20261002T030000Z-7dd4e9c6.json")
     # what the validator could not attribute with certainty is said in its own words
     record["proposal"]["validation"]["flags"] = {"uncertainSubject": ["ops[0]: /events/x/date = 2026-11-30 (the line names two models)"]}
     assert any("程式無法確定引文講的就是這筆紀錄" in r and "the line names two models" in r for r in P.holds(record["proposal"], P.Policy()))
@@ -1211,6 +1211,60 @@ def test_a_digests_time_stamp_is_written_by_the_replay(plane):
     assert json.loads(live(plane).files["data/digests/2026-10-02.json"])["generatedAt"] == "2026-10-02T03:00:00Z"
 
 
+# what marks a digest entry: the subject it is about across days, a coverage note, the earlier entries it updates
+EARLIER_TITLE = "Azure o 系列統一在 2026-11-19 退役"  # lifecycleChanges of the 2026-09-24 digest
+
+
+def marked_digest(merges=(EARLIER_TITLE,)) -> dict:
+    earlier_action = json.loads(snapshot_tree()["data/digests/2026-09-24.json"])["actionItems"][3]["action"]
+    entry = {"title": "Azure o 系列退役時程複查", "detail": "官方表未變動。", "impact": "low", "sources": [{"id": "ms-foundry-retirement-schedule"}],
+             "topic": "lifecycle:azure-o-series", "check": True, "merges": list(merges)}
+    action = {"priority": "P1", "action": "Azure o 系列遷移（沿用前期項目）。", "topic": "lifecycle:azure-o-series", "merges": [earlier_action]}
+    return {**DIGEST, "lifecycleChanges": [entry], "actionItems": [action]}
+
+
+def without_digest_marks(files: dict[str, bytes]) -> dict[str, bytes]:
+    """``files`` with the portal schema as it was before digest entries could carry topic / check / merges."""
+    def strip(schema):
+        for name in ("topic", "check", "merges"):
+            schema["definitions"]["DigestItem"]["properties"].pop(name)
+        for name in ("topic", "merges"):
+            schema["definitions"]["DigestFile"]["properties"]["actionItems"]["items"]["properties"].pop(name)
+    return edit(files, "schema/llmops.schema.json", strip)
+
+
+def test_digest_marks_go_live_once_the_live_schema_knows_them(plane):
+    """The publisher replays a proposal on the live release and validates it with that release's schema: until the
+    portal's schema with topic / check / merges is live (portalctl push --only schema), a digest that uses them is refused."""
+    old = plane.bootstrap(without_digest_marks(snapshot_tree()))
+    record = accepted_run()
+    record["proposal"]["digest"] = marked_digest()
+    refused = P.publish_proposal(plane.data, copy.deepcopy(record), control=plane.control, now=T1)
+    assert refused.status == "rejected" and any("portal validation" in r and "Additional properties" in r and "'topic'" in r for r in refused.reasons), refused.reasons
+    assert live(plane).release_id == old.release_id and "data/digests/2026-10-02.json" not in live(plane).files
+    # the rollout: the schema first, then the proposals that use it
+    pushed = P.publish_tree(plane.data, snapshot_tree(), only=["schema"], base_release=old.release_id, actor="eunice", now=T1)
+    assert pushed.status == "published" and pushed.changes["modified"] == ["schema/llmops.schema.json"], (pushed.reasons, pushed.changes)
+    outcome = P.publish_proposal(plane.data, record, control=plane.control, now=T1)
+    assert outcome.status == "published", outcome.reasons
+    published = json.loads(live(plane).files["data/digests/2026-10-02.json"])
+    assert published["lifecycleChanges"][0]["merges"] == [EARLIER_TITLE] and published["lifecycleChanges"][0]["check"] is True
+    assert published["actionItems"][0]["topic"] == "lifecycle:azure-o-series"
+
+
+@pytest.mark.parametrize("merges", [["Azure o 系列統一在 2026-11-20 退役"], ["Claude Opus 5.5 降價"], ["Azure o 系列退役時程複查"]])
+def test_merges_that_name_no_earlier_entry_are_refused_on_replay(plane, merges):
+    """`merges` are not held to a quote because they are titles the portal already has: the replay checks that they are -
+    a title of the same section of an earlier digest - whatever the run record says about itself."""
+    base = plane.bootstrap()
+    record = accepted_run()
+    record["proposal"]["digest"] = marked_digest(merges)
+    outcome = P.publish_proposal(plane.data, record, control=plane.control, now=T1)
+    assert outcome.status == "rejected" and any("digest/lifecycleChanges/0/merges/0" in r and "is not the title of an entry of lifecycleChanges" in r
+                                                for r in outcome.reasons), outcome.reasons
+    assert live(plane).release_id == base.release_id
+
+
 def test_create_is_not_an_operation_a_proposal_can_use(plane):
     """It used to be: a whole page, with any `asOf`, published without one of the checks that are made per changed value."""
     base = plane.bootstrap()
@@ -1391,7 +1445,7 @@ for _ in range(3000):
     lambda r: r["proposal"].update(asOfFiles="data/lifecycle.json"),
     lambda r: r["proposal"].update(touchSources=[{"id": "x"}]),
     lambda r: r["proposal"].update(id=5),
-    lambda r: r["proposal"].update(id="prop-20261002T030000Z-1169b48e\n"),
+    lambda r: r["proposal"].update(id="prop-20261002T030000Z-7dd4e9c6\n"),
     lambda r: r["proposal"].update(id=["prop-1"]),
     lambda r: r["proposal"].update(createdAt=None),
     lambda r: r["proposal"].update(createdAt=5),
@@ -1476,7 +1530,7 @@ def test_already_published_means_the_live_data_holds_it_not_that_it_was_publishe
     first = P.publish_proposal(plane.data, accepted_run(), control=plane.control, now=T1)
     assert P.publish_proposal(plane.data, accepted_run(), control=plane.control, now=T2).status == "already_published"
     P.rollback(plane.data, actor="eunice", now=T2)
-    assert any(h.get("proposalId") == "prop-20261002T030000Z-1169b48e" for h in live(plane).manifest["history"])
+    assert any(h.get("proposalId") == "prop-20261002T030000Z-7dd4e9c6" for h in live(plane).manifest["history"])
     assert P.resume(plane.data, actor="eunice", now=T2).status == "resumed"
     again = P.publish_proposal(plane.data, accepted_run(), control=plane.control, now=T2)
     assert again.status == "published" and again.release_id != first.release_id
@@ -1484,7 +1538,7 @@ def test_already_published_means_the_live_data_holds_it_not_that_it_was_publishe
 
 # ---------------------------------------------------------------------------------------------- what is approved is what was shown
 REVIEW = P.Policy(mode="review")
-PROP = "prop-20261002T030000Z-1169b48e"
+PROP = "prop-20261002T030000Z-7dd4e9c6"
 
 
 def test_a_waiting_proposal_is_kept_with_its_identity_and_what_it_would_change(plane):

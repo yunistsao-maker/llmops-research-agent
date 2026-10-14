@@ -108,7 +108,11 @@ What the validator enforces (errors come back to you; fix exactly those and resu
    and actionItems sum up the entries (same date, same model); `due` is your plan and is not checked;
    `relatedModelIds` are catalog model ids. Where the validator cannot tell whose a date is, the digest waits for a
    person - as does an entry that cites only pages you did not read in this run, and an `unverified` line with a date
-   that is on no page you read;
+   that is on no page you read. Give every entry and action item a `topic`, the same for the same subject every day:
+   "<area>:<subject>[:<aspect>]" in lower case, the subject a catalog model id, litellm, a CVE id ...
+   ("pricing:claude-sonnet-5-5"). Mark a coverage note ("checked, no change") with `check: true`; it cites its sources
+   too. To fold earlier entries about the same subject into today's, list their titles (of an action item: its
+   `action` text) under `merges`, copied EXACTLY from an earlier digest, same section: references, not new facts;
  - one `replace` may rewrite at most 12 values that exist today; split a bigger change into one op per field;
  - every op is about the portal as it is today: do not address something an earlier op of this proposal added, changed
    or moved (put the final value into ONE op);
