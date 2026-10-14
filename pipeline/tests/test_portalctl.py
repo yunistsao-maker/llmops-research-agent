@@ -10,6 +10,7 @@ import pytest
 from conftest import COMPAT, FIXTURES, PERF, snapshot_tree, squash, tool_file, write_tree
 
 import portalctl as CTL
+from portal_pipeline import jsonmerge as J
 from portal_pipeline import notify as N
 from portal_pipeline import publish as P
 from portal_pipeline import releases as R
@@ -344,6 +345,14 @@ def edit_json(path, **fields):
     path.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def edit_event_date(path, date, event="azure-claude-sonnet-4-5-eol"):
+    """Change the date of a lifecycle event in the checkout - the value the agent's update (AUTO) changes as well, so
+    that the two edits are a conflict even record by record."""
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    next(e for e in doc["events"] if e["id"] == event)["date"] = date
+    path.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
 def test_bootstrap_says_what_will_be_readable_and_asks_first(env, capsys):
     (env.portal / "data" / "internal" / "platform-inventory.json").write_bytes(tool_file("data/internal/platform-inventory.example.json"))
     assert env.run("bootstrap", "--portal", str(env.portal)) == 3  # not a terminal, no --yes: nothing is published
@@ -445,12 +454,13 @@ def test_pull_takes_the_upstream_version_only_when_asked(env):
     env.bootstrap()
     env.run(*AUTO)
     lifecycle = env.portal / "data" / "lifecycle.json"
-    edit_json(lifecycle, asOf="2026-12-31")
+    edit_event_date(lifecycle, "2026-12-31")
+    mine = lifecycle.read_bytes()
     # a preview ends the way the pull would: with the conflict, and its exit code (a script that asks first gets the answer)
-    assert env.run("pull", "--portal", str(env.portal), "--dry-run") == 4 and "預覽" in env.out and json.loads(lifecycle.read_text())["asOf"] == "2026-12-31"
+    assert env.run("pull", "--portal", str(env.portal), "--dry-run") == 4 and "預覽" in env.out and lifecycle.read_bytes() == mine
     assert "會因為上面 1 個要先決定的檔案而停下" in env.out
     assert env.run("pull", "--portal", str(env.portal), "--overwrite", "--dry-run") == 0 and "停下" not in env.out
-    assert json.loads(lifecycle.read_text())["asOf"] == "2026-12-31"
+    assert lifecycle.read_bytes() == mine
     assert env.run("pull", "--portal", str(env.portal), "--overwrite") == 0
     assert lifecycle.read_bytes() == env.live().files["data/lifecycle.json"] and marker(env) == env.live().release_id
 
@@ -462,11 +472,11 @@ def test_a_pull_that_cannot_finish_leaves_nothing_for_the_next_push_to_mistake_f
     base = env.bootstrap()
     before = env.live().files["data/sources.json"]
     env.run(*AUTO)                                                 # upstream: lifecycle.json and sources.json change
-    edit_json(env.portal / "data" / "lifecycle.json", asOf="2026-12-31")  # here: an edit to the same file
+    edit_event_date(env.portal / "data" / "lifecycle.json", "2026-12-31")  # here: another change to the same value
     assert env.run("pull", "--portal", str(env.portal)) == 4 and marker(env) == base
     assert (env.portal / "data" / "sources.json").read_bytes() == before
     assert env.run("rollback", "--reason", "這一版有誤") == 0 and env.live().files["data/sources.json"] == before
-    assert env.run("push", "--portal", str(env.portal), "--yes", "--note", "只改了 asOf") == 0, env.out
+    assert env.run("push", "--portal", str(env.portal), "--yes", "--note", "只改了日期") == 0, env.out
     assert "~ data/lifecycle.json" in env.out and "data/sources.json" not in env.out
     assert env.live().files["data/sources.json"] == before        # what was rolled back stays rolled back
 
@@ -711,6 +721,288 @@ def test_pull_does_not_bring_back_what_the_checkout_deleted(env):
     assert env.run("push", "--portal", str(env.portal), "--yes") == 0 and "沒有變更" in env.out
     (env.portal / PERF).unlink()
     assert env.run("push", "--portal", str(env.portal), "--only", "runs", "--yes") == 0 and PERF not in env.live().files
+
+
+# ---------------------------------------------------------------------------------------------- pull: data files record by record
+CHANGED_EVENT = "azure-claude-sonnet-4-5-eol"   # the record the agent's update (AUTO) changes in data/lifecycle.json
+
+
+def as_written(doc) -> bytes:
+    """A data file the way the portal repo writes one."""
+    return (json.dumps(doc, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def new_model(model_id: str, name: str) -> dict:
+    """A catalog record for another model: the fixture's own, renamed (the ids of its offerings too - they are unique)."""
+    first = json.loads(snapshot_tree()["data/catalog.json"])["models"][0]
+    model = json.loads(json.dumps(first, ensure_ascii=False).replace(first["id"], model_id))
+    model["name"] = name
+    return model
+
+
+def edit_doc(path, edit) -> None:
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    edit(doc)
+    path.write_bytes(as_written(doc))
+
+
+def publish_upstream(env, edits) -> R.Current:
+    """A release that changes some files of the live one, the way the agent's next update does."""
+    current = env.live()
+    tree = dict(current.files)
+    for rel, edit in edits.items():
+        doc = json.loads(tree[rel])
+        edit(doc)
+        tree[rel] = as_written(doc)
+    outcome = P.publish_tree(env.store, tree, base_release=current.release_id, actor="agent")
+    assert outcome.status == "published", outcome.reasons
+    return env.live()
+
+
+def test_a_record_added_on_each_side_of_one_file_is_merged_not_lost(env):
+    """The incident: the agent edited a model and added one in the release while a person added another model to the
+    checkout's catalog.json.  As a whole file that was a conflict, so one side's work got lost - here the person's model,
+    which never reached a release and vanished when the site was rebuilt from one.  Record by record, both stay."""
+    first = env.bootstrap()
+    catalog = env.portal / "data" / "catalog.json"
+
+    def agent(doc):
+        doc["models"][0]["summary"] = "agent 更新的摘要"
+        doc["models"].append(new_model("claude-opus-5-5", "Claude Opus 5.5"))
+        doc["generatedAt"] = "2026-10-03T00:00:00Z"
+
+    live = publish_upstream(env, {"data/catalog.json": agent})
+    edit_doc(catalog, lambda doc: doc["models"].append(new_model("gpt-6-luna", "GPT-6 Luna")))
+    edited = catalog.read_bytes()
+
+    # push does not put the checkout's file over the agent's work: it stops, and says to pull first
+    assert env.run("push", "--portal", str(env.portal), "--yes") == 4
+    assert "data/catalog.json" in env.out and "先portalctlpull" in squash(env.out) and env.live().release_id == live.release_id
+
+    line = "  ≈ data/catalog.json（合併：上線版本 +3 筆、本機 +1 筆）"
+    assert env.run("pull", "--portal", str(env.portal), "--dry-run") == 0 and line in env.out
+    assert catalog.read_bytes() == edited and marker(env) == first
+    assert env.run("pull", "--portal", str(env.portal)) == 0, env.out
+    assert line in env.out and "寫入 1 個檔案（其中 1 個逐筆合併）" in env.out and "還沒有發布" in env.out
+    merged = json.loads(catalog.read_text(encoding="utf-8"))
+    # the base's records in their order, then the release's new one, then the checkout's
+    assert [m["id"] for m in merged["models"]] == ["claude-sonnet-5-5", "claude-opus-5-5", "gpt-6-luna"]
+    assert merged["models"][0]["summary"] == "agent 更新的摘要" and merged["generatedAt"] == "2026-10-03T00:00:00Z"
+    assert catalog.read_bytes() == as_written(merged)
+    # based on the release it pulled, with the person's record on top - which the next push publishes
+    assert marker(env) == live.release_id
+    assert env.run("push", "--portal", str(env.portal), "--yes") == 0, env.out
+    published = json.loads(env.live().files["data/catalog.json"])
+    assert [m["id"] for m in published["models"]] == ["claude-sonnet-5-5", "claude-opus-5-5", "gpt-6-luna"]
+    assert published["models"][0]["summary"] == "agent 更新的摘要"
+    assert marker(env) == env.live().release_id  # the checkout is now exactly what is live
+
+
+def test_the_same_value_changed_differently_on_both_sides_is_named_and_nothing_is_written(env):
+    base = env.bootstrap()
+    env.run(*AUTO)   # the agent: the event's date 2026-11-15 → 2026-11-30 (and data/sources.json)
+    lifecycle, sources = env.portal / "data" / "lifecycle.json", env.portal / "data" / "sources.json"
+    edit_event_date(lifecycle, "2026-12-24")
+    edit_json(lifecycle, asOf="2026-10-05")   # would merge on its own: the file is still not written in part
+    before = {p: p.read_bytes() for p in (lifecycle, sources)}
+    for dry_run in (("--dry-run",), ()):
+        assert env.run("pull", "--portal", str(env.portal), *dry_run) == 4, env.out
+        for expected in ("本機和上線都改過，沒有覆蓋：data/lifecycle.json", "data/lifecycle.json：1 處兩邊改得不一樣",
+                         f"        /events/{CHANGED_EVENT}/date\n", '上線："2026-11-30"　本機："2026-12-24"', "逐處決定", "--overwrite"):
+            assert expected in env.out, expected
+        assert "≈" not in env.out and "/asOf" not in env.out
+        assert all(p.read_bytes() == data for p, data in before.items()) and marker(env) == base
+    assert "沒有寫入任何檔案" in env.out
+    # --overwrite keeps its meaning: a file with a conflict becomes the release's, as a whole
+    assert env.run("pull", "--portal", str(env.portal), "--overwrite") == 0, env.out
+    assert lifecycle.read_bytes() == env.live().files["data/lifecycle.json"] and marker(env) == env.live().release_id
+
+
+def test_the_list_of_conflicts_is_bounded(env):
+    env.bootstrap()
+    lifecycle = env.portal / "data" / "lifecycle.json"
+    ids = [e["id"] for e in json.loads(lifecycle.read_text(encoding="utf-8"))["events"]][:12]
+
+    def notes(text):
+        def edit(doc):
+            for e in doc["events"]:
+                if e["id"] in ids:
+                    e["notes"] = [text]
+        return edit
+
+    publish_upstream(env, {"data/lifecycle.json": notes("上線的說明")})
+    edit_doc(lifecycle, notes("本機的說明"))
+    assert env.run("pull", "--portal", str(env.portal)) == 4
+    assert "data/lifecycle.json：12 處兩邊改得不一樣" in env.out and "        …另有 2 處" in env.out
+    assert sum(f"/events/{i}/notes\n" in env.out for i in ids) == 10   # (a list of text: changed on both sides, a conflict as a whole)
+
+
+def test_a_data_file_that_is_not_json_here_is_a_conflict_as_a_whole(env):
+    base = env.bootstrap()
+    env.run(*AUTO)
+    (env.portal / "data" / "sources.json").write_text('{"generatedAt": ', encoding="utf-8")
+    assert env.run("pull", "--portal", str(env.portal)) == 4
+    assert "data/sources.json：無法逐筆合併（本機的版本不是有效的 JSON），整個檔案算作衝突" in env.out and marker(env) == base
+
+
+def test_a_stamp_both_sides_moved_takes_the_later_time(env):
+    env.bootstrap()
+    env.run(*AUTO)   # generatedAt of lifecycle.json and sources.json: 2026-10-01T14:30:00Z → 2026-10-02T03:00:00Z
+    lifecycle, sources = env.portal / "data" / "lifecycle.json", env.portal / "data" / "sources.json"
+    edit_json(lifecycle, generatedAt="2026-10-05T08:00:00Z", asOf="2026-10-05")       # later than the release's
+
+    def mine(doc):
+        doc["generatedAt"] = "2026-10-01T20:00:00Z"                                    # earlier than the release's
+        doc["sources"][0]["title"] = "本機改的標題"
+
+    edit_doc(sources, mine)
+    assert env.run("pull", "--portal", str(env.portal)) == 0, env.out
+    assert "≈ data/lifecycle.json（合併：上線版本 +1 筆、本機 +2 筆）" in env.out and "≈ data/sources.json（合併：上線版本 +2 筆、本機 +1 筆）" in env.out
+    merged = json.loads(lifecycle.read_text(encoding="utf-8"))
+    assert merged["generatedAt"] == "2026-10-05T08:00:00Z" and merged["asOf"] == "2026-10-05" and lifecycle_date({"data/lifecycle.json": lifecycle.read_bytes()}) == "2026-11-30"
+    merged = json.loads(sources.read_text(encoding="utf-8"))
+    upstream = json.loads(env.live().files["data/sources.json"])
+    assert merged["generatedAt"] == "2026-10-02T03:00:00Z" and merged["sources"][0]["title"] == "本機改的標題"
+    assert merged["sources"][1:] == upstream["sources"][1:]   # (the release's own change to another source is in)
+
+
+def test_a_file_whose_merge_is_one_sides_version_is_that_version(env):
+    """Both sides made the same change; only the stamps differ.  The later stamp decides whose file the result is."""
+    first = env.bootstrap()
+    env.run(*AUTO)
+    live = env.live()
+    lifecycle, sources = env.portal / "data" / "lifecycle.json", env.portal / "data" / "sources.json"
+    doc = json.loads(live.files["data/lifecycle.json"])
+    lifecycle.write_bytes(as_written({**doc, "generatedAt": "2026-10-06T00:00:00Z"}))       # later than the release's
+    mine = lifecycle.read_bytes()
+    doc = json.loads(live.files["data/sources.json"])
+    sources.write_bytes(as_written({**doc, "generatedAt": "2026-10-01T20:00:00Z"}))         # earlier than the release's
+    assert marker(env) == first and env.run("pull", "--portal", str(env.portal)) == 0, env.out
+    assert "保留妳改過的 1 個檔案（和上線的修改逐筆合併後，結果就是妳的版本）：data/lifecycle.json" in env.out and lifecycle.read_bytes() == mine
+    assert "  ~ data/sources.json\n" in env.out and sources.read_bytes() == live.files["data/sources.json"] and "≈" not in env.out
+    assert marker(env) == live.release_id
+
+
+def test_a_record_removed_on_one_side_goes_unless_the_other_side_changed_it(env):
+    env.bootstrap()
+    env.run(*AUTO)
+    lifecycle = env.portal / "data" / "lifecycle.json"
+    events = json.loads(lifecycle.read_text(encoding="utf-8"))["events"]
+    gone = events[0]["id"]   # unchanged upstream
+    edit_json(lifecycle, events=[e for e in events if e["id"] not in (gone, CHANGED_EVENT)])
+    assert env.run("pull", "--portal", str(env.portal)) == 4
+    assert f"        /events/{CHANGED_EVENT}\n" in env.out and "本機：（已刪除）" in env.out and f"/events/{gone}" not in env.out
+    # the record the agent changed, as it is live now: what is left is a removal on one side only
+    live_events = json.loads(env.live().files["data/lifecycle.json"])["events"]
+    changed = next(e for e in live_events if e["id"] == CHANGED_EVENT)
+    edit_json(lifecycle, events=[changed if e["id"] == CHANGED_EVENT else e for e in events if e["id"] != gone])
+    assert env.run("pull", "--portal", str(env.portal)) == 0, env.out
+    assert "≈ data/lifecycle.json" in env.out
+    assert json.loads(lifecycle.read_text(encoding="utf-8"))["events"] == [e for e in live_events if e["id"] != gone]
+
+
+def test_files_outside_data_are_still_compared_as_whole_files(env):
+    """The schema, test results and configuration are not stitched together from two edits."""
+    env.bootstrap()
+
+    def comment(text):
+        return lambda doc: doc.__setitem__("$comment", text)
+
+    publish_upstream(env, {"schema/llmops.schema.json": comment("上線加的說明"),
+                           PERF: lambda doc: doc.__setitem__("clientLocation", "upstream")})
+    edit_doc(env.portal / "schema" / "llmops.schema.json", lambda doc: doc.__setitem__("description", "本機加的說明"))
+    (env.portal / PERF).write_bytes(tool_file(PERF, route="mock-local"))
+    assert env.run("pull", "--portal", str(env.portal)) == 4
+    assert f"2 個檔案本機和上線都改過，沒有覆蓋：{PERF}、schema/llmops.schema.json" in env.out
+    assert "≈" not in env.out and "JSON pointer" not in env.out
+
+
+# the merge itself
+def test_lists_that_are_not_records_are_taken_whole_from_the_side_that_changed_them():
+    base = {"notes": ["a"], "steps": [{"text": "1"}], "tags": ["x"]}
+    m = J.merge(base, {**base, "notes": ["a", "上線"]}, {**base, "steps": [{"text": "1"}, {"text": "2"}]})
+    assert m.value == {"notes": ["a", "上線"], "steps": [{"text": "1"}, {"text": "2"}], "tags": ["x"]} and not m.clashes
+    m = J.merge(base, {**base, "notes": ["a", "上線"], "steps": [{"text": "上線"}]}, {**base, "notes": ["a", "本機"], "steps": [{"text": "本機"}]})
+    assert [(x.pointer, x.release, x.checkout) for x in m.clashes] == [("/notes", ["a", "上線"], ["a", "本機"]), ("/steps", [{"text": "上線"}], [{"text": "本機"}])]
+    # the same change on both sides is no conflict; a change of type is a change (1, 1.0 and true are three values)
+    assert not J.merge(base, {**base, "tags": ["y"]}, {**base, "tags": ["y"]}).clashes
+    assert J.merge({"n": 1}, {"n": True}, {"n": 1}).value == {"n": True}
+
+
+def test_records_are_told_apart_by_the_key_the_agent_addresses_them_by():
+    """``patch.record_key``: id, service, feature, alias, scope, endpoint - and the version of a software release.  A
+    name is not one (two benchmark results may share it), and a key that occurs twice makes the list a plain list."""
+    from research.portal.patch import record_key
+
+    releases = [{"version": "1.80.0", "channel": "stable", "highlights": ["a"]}, {"version": "1.81.0", "channel": "stable", "highlights": ["b"]}]
+    assert [record_key(r) for r in releases] == [("version", "1.80.0"), ("version", "1.81.0")]
+    theirs = [releases[0], {**releases[1], "highlights": ["b", "上線"]}]
+    mine = [{**releases[0], "highlights": ["a", "本機"]}, releases[1], {"version": "1.82.0", "channel": "nightly"}]
+    m = J.merge({"releases": releases}, {"releases": theirs}, {"releases": mine})
+    assert not m.clashes and m.value["releases"] == [mine[0], theirs[1], mine[2]] and (m.from_release, m.from_checkout) == (1, 2)
+    named = [{"name": "MMLU", "score": 1}, {"name": "GPQA", "score": 2}]
+    m = J.merge({"b": named}, {"b": [{**named[0], "score": 3}, named[1]]}, {"b": [named[0], {**named[1], "score": 4}]})
+    assert [x.pointer for x in m.clashes] == ["/b"]
+    twice = [{"service": "bedrock", "region": "a"}, {"service": "bedrock", "region": "b"}]
+    m = J.merge({"h": twice}, {"h": [twice[0]]}, {"h": [*twice, {"service": "vertex"}]})
+    assert [x.pointer for x in m.clashes] == ["/h"]
+
+
+def test_removal_rules():
+    base = {"models": [{"id": "a", "x": 1}, {"id": "b", "x": 1}, {"id": "c", "x": 1}]}
+    a, b, c = base["models"]
+    # removed on one side and untouched on the other: removed (either side); removed on both: removed
+    assert J.merge(base, {"models": [b, c]}, {"models": [a, b, {**c, "x": 2}]}).value == {"models": [b, {**c, "x": 2}]}
+    assert J.merge(base, {"models": [a, b, {**c, "x": 2}]}, {"models": [b, c]}).value == {"models": [b, {**c, "x": 2}]}
+    assert J.merge(base, {"models": [b, {**c, "x": 2}]}, {"models": [b, c]}).value == {"models": [b, {**c, "x": 2}]}
+    # removed on one side and changed on the other: a conflict, whichever side removed it
+    m = J.merge(base, {"models": [b, {**c, "x": 2}]}, {"models": [{**a, "x": 3}, b, c]})
+    assert [(x.pointer, x.release, x.checkout) for x in m.clashes] == [("/models/a", J.MISSING, {"id": "a", "x": 3})]
+    m = J.merge(base, {"models": [{**a, "x": 3}, b, c]}, {"models": [b, c, {"id": "d"}]})
+    assert [(x.pointer, x.release, x.checkout) for x in m.clashes] == [("/models/a", {"id": "a", "x": 3}, J.MISSING)]
+    # the same for a field of an object; and a record added on both sides, differently
+    assert [x.pointer for x in J.merge({"k": 1, "z": 0}, {"z": 0}, {"k": 2, "z": 0}).clashes] == ["/k"]
+    assert [x.pointer for x in J.merge({"m": []}, {"m": [{"id": "n", "x": 1}]}, {"m": [{"id": "n", "x": 2}]}).clashes] == ["/m/n"]
+
+
+def test_the_order_of_records():
+    a, b, c = {"id": "a"}, {"id": "b"}, {"id": "c"}
+    base = [a, b, c]
+    # only one side changed which records there are, or their order: its order, a record put in the middle included
+    m = J.merge(base, [{**a, "x": 1}, b, c], [a, {"id": "m"}, c, b])
+    assert m.value == [{**a, "x": 1}, {"id": "m"}, c, b]
+    # both did: the base's order, then what the release added, then what the checkout added
+    m = J.merge(base, [{"id": "r1"}, a, c, {"id": "r2"}], [a, {"id": "m"}, b, c])
+    assert [r["id"] for r in m.value] == ["a", "c", "r1", "r2", "m"] and not m.clashes
+    # ... unless one of them also reordered what it kept: then no order honours both
+    m = J.merge(base, [c, b, a], [a, b, c, {"id": "m"}])
+    assert [x.pointer for x in m.clashes] == [""]   # (the JSON pointer of the document as a whole)
+
+
+def test_only_the_top_level_stamps_are_settled_by_time():
+    m = J.merge({"asOf": "2026-10-01", "x": {"asOf": "2026-10-01"}}, {"asOf": "2026-10-03", "x": {"asOf": "2026-10-03"}},
+                {"asOf": "2026-10-02", "x": {"asOf": "2026-10-02"}})
+    assert [x.pointer for x in m.clashes] == ["/x/asOf"] and m.value["asOf"] == "2026-10-03"
+    # compared as points in time, not as text
+    m = J.merge({"generatedAt": "2026-10-01T00:00:00Z"}, {"generatedAt": "2026-10-02T23:00:00+08:00"}, {"generatedAt": "2026-10-02T16:00:00Z"})
+    assert m.value == {"generatedAt": "2026-10-02T16:00:00Z"} and (m.from_release, m.from_checkout) == (0, 1)
+    # what is not a time, or a stamp one side removed: the ordinary rules
+    assert [x.pointer for x in J.merge({"asOf": "a"}, {"asOf": "b"}, {"asOf": "c"}).clashes] == ["/asOf"]
+    assert [x.pointer for x in J.merge({"asOf": "2026-10-01"}, {}, {"asOf": "2026-10-03"}).clashes] == ["/asOf"]
+
+
+def test_the_merge_is_deterministic_and_written_like_the_repo_writes_data():
+    base = {"schema": "catalog/v1", "a/b~c": {"x": 1}, "models": [{"id": "x/y", "v": 1}]}
+    theirs = {**base, "a/b~c": {"x": 2}, "models": [{"id": "x/y", "v": 2}], "新": "上線"}
+    mine = {**base, "a/b~c": {"x": 3}, "models": [{"id": "x/y", "v": 3}], "本機": True}
+    m = J.merge(base, theirs, mine)
+    assert [x.pointer for x in m.clashes] == ["/a~1b~0c/x", "/models/x~1y/v"]   # (JSON pointer escaping)
+    clean = J.merge_bytes(as_written(base), as_written({**base, "新": "上線"}), as_written({**base, "本機": True}))
+    again = J.merge_bytes(as_written(base), as_written({**base, "新": "上線"}), as_written({**base, "本機": True}))
+    assert J.dump(clean.value) == J.dump(again.value) == as_written({**base, "新": "上線", "本機": True})
+    with pytest.raises(J.Unmergeable) as e:
+        J.merge_bytes(as_written(base), b'{"x": NaN}', as_written(base))
+    assert (e.value.side, e.value.why) == ("release", "not JSON")
 
 
 # ---------------------------------------------------------------------------------------------- rollback, pause

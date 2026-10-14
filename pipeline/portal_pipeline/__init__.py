@@ -7,6 +7,7 @@ release, and switches a single pointer file so the UI picks it up - no model, no
     storage     an S3 prefix (AWS) or a folder (local runs, tests) behind one small interface
     releases    the layout the UI reads: manifest.json -> releases/<id>/...
     publish     proposal -> release (gates, approval, rollback, manual pushes from a portal checkout)
+    jsonmerge   three-way merge of one JSON data file, record by record (portalctl pull)
     notify      the messages a person receives
     agentcore   starting a background research run on AgentCore Runtime
     handlers    AWS Lambda entry points used by the Step Functions state machine (infra/pipeline.yaml)

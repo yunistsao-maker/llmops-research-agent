@@ -1430,7 +1430,8 @@ def publish_tree(store: Store, tree: dict[str, bytes], *, only: Iterable[str] | 
         listed = "、".join(conflicts[:6]) + ("…" if len(conflicts) > 6 else "")
         if base_release and not base_lost:
             reasons.append(f"這 {len(conflicts)} 個檔案在 checkout 和上線的資料裡都改過（checkout 取自 release {base_release}，上線中的是 {live_id}）：{listed}。"
-                           "先 pull（不會覆蓋妳改過的檔案）再處理，確定要以 checkout 為準才加 --force")
+                           "先 portalctl pull（data/ 的 JSON 會逐筆合併，不會覆蓋妳改過的內容）再 push；"
+                           "確定要整個檔案以 checkout 為準（上線在這些檔案的更新會被蓋掉）才加 --force")
         else:
             origin = f"記錄的來源 release {_flat(base_release, 40)} 已經讀不到" if base_release else "沒有記錄是從哪個 release 取得的"
             reasons.append(f"這次會改到研究資料（{listed}），但 checkout {origin}，而上線中的是 {live_id}："

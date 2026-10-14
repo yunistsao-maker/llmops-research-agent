@@ -16,8 +16,8 @@
     portalctl.py rollback [--to <releaseId>] --reason "…"   # 回復到前一版，並暫停自動發布
     portalctl.py pause --reason "…" / resume
     portalctl.py push --portal ../llmops-portal --only runs,data/internal   # 發布測試結果與平台清單（只新增／取代，不動研究資料）
-    portalctl.py pull --portal ../llmops-portal          # 把上線中的資料合併回 checkout（不會覆蓋妳改過的檔案）
-    portalctl.py push --portal ../llmops-portal          # 發布手動修改（和上線中的資料逐檔合併；兩邊都改過的檔案會擋下）
+    portalctl.py pull --portal ../llmops-portal          # 把上線中的資料合併回 checkout（data/ 的 JSON 逐筆合併；不會覆蓋妳改過的內容）
+    portalctl.py push --portal ../llmops-portal          # 發布手動修改（和上線中的資料逐檔合併；兩邊都改過的檔案會擋下：先 pull）
     portalctl.py publish research-result.json            # 把某一次研究的結果送去待核准（--mode auto：通過關卡就直接發布）
     portalctl.py history / executions
 
@@ -35,6 +35,13 @@
   每個動作開始前都會印出它走的是哪一條路。--data / --state / --state-machine / --by / --direct 寫在子指令前後都可以。
 
 --by、--reason、--note 會寫進 manifest.json 與 release.json，UI 的使用者讀得到：不要放不該公開的內容。
+
+pull／push 與 checkout：checkout 記得它取自哪一個 release（.portal-release.json），兩個方向都以它為基準三方合併。
+  · pull：只有上線改過的檔案寫入，只有妳改過的保留。兩邊都改過的 data/ 底下的 JSON 逐筆合併：物件逐個 key、
+    紀錄清單依紀錄的 key（id、service、feature、scope、alias、endpoint；軟體版本用 version）對齊，兩邊新增的紀錄都留下
+    （上線的在前）；兩邊把同一個值改得不一樣才是衝突，會列出 JSON pointer。最上層的 asOf／generatedAt 兩邊都改時取較晚的。
+    schema、runs、config 仍然整個檔案比較。有任何衝突就什麼都不寫（--overwrite：衝突的檔案整個換成上線的版本）。
+  · push：只發布 checkout 改過的檔案；上線的版本在這之間也改過的檔案會被擋下（先 pull 合併；--force 則整個檔案以 checkout 為準）。
 
 Exit code：0 成功 · 1 verify 有檢查沒過 · 2 參數錯誤 · 3 環境或輸入問題 · 4 沒有發布（被拒絕、待核准、或 pull 有衝突）· 5 流程執行失敗
 """
@@ -59,6 +66,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT / "pipeline") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "pipeline"))
 
+from portal_pipeline import jsonmerge as J  # noqa: E402
 from portal_pipeline import notify as N  # noqa: E402
 from portal_pipeline import publish as P  # noqa: E402
 from portal_pipeline import releases as R  # noqa: E402
@@ -877,9 +885,50 @@ def _local(portal: Path, rel: str) -> tuple[bytes | None, str | None]:
     return path.read_bytes(), None
 
 
+def merged_by_value(rel: str) -> bool:
+    """Is a file that both sides changed merged value by value (``jsonmerge``) rather than as a whole?  The JSON under
+    data/ - research data and the team's lists - is: there two people (or a person and the agent) add records to one
+    file.  The schema, test results and configuration stay whole files: a schema stitched together from two edits is
+    nobody's schema."""
+    return rel.startswith("data/") and rel.endswith(".json")
+
+
+_UNREAD_SIDE = {"base": "checkout 的來源 release", "release": "上線", "checkout": "本機", "any": "其中一個"}
+_UNREAD_WHY = {"not JSON": "不是有效的 JSON", "nested too deeply": "巢狀太深，無法逐筆比對"}
+CLASHES_SHOWN, CLASH_FILES_SHOWN = 10, 8
+
+
+def _value(value: Any) -> str:
+    """A value of a conflict, short, for a line of the report (it is data from elsewhere)."""
+    if value is J.MISSING:
+        return "（已刪除）"
+    return c(json.dumps(value, ensure_ascii=False), 80)
+
+
+def _report_clashes(ctx: Ctx, conflict: list[str], clashes: dict[str, list[J.Clash]], unread: dict[str, str]) -> None:
+    """Where, inside the data files in ``conflict``, the two sides changed the same value differently."""
+    named = [rel for rel in conflict if rel in clashes or rel in unread]
+    for rel in named[:CLASH_FILES_SHOWN]:
+        if rel in unread:
+            ctx.say(f"      {rel}：無法逐筆合併（{unread[rel]}），整個檔案算作衝突")
+            continue
+        found = clashes[rel]
+        ctx.say(f"      {rel}：{len(found)} 處兩邊改得不一樣（JSON pointer；清單裡的紀錄以它的 key 表示，例如 id）")
+        for x in found[:CLASHES_SHOWN]:
+            ctx.say(f"        {c(x.pointer, 200) if x.pointer else '（整個檔案）'}")
+            ctx.say(f"          上線：{_value(x.release)}　本機：{_value(x.checkout)}")
+        if len(found) > CLASHES_SHOWN:
+            ctx.say(f"        …另有 {len(found) - CLASHES_SHOWN} 處")
+    if len(named) > CLASH_FILES_SHOWN:
+        ctx.say(f"      …另有 {len(named) - CLASH_FILES_SHOWN} 個檔案")
+
+
 def cmd_pull(ctx: Ctx) -> int:
-    """Merge a release into the checkout, file by file, three ways: what was only changed upstream is written, what was
-    only changed here is kept, what both changed is reported (and kept, unless --overwrite)."""
+    """Merge a release into the checkout three ways, against the release the checkout says it came from (its marker):
+    what was only changed upstream is written, what was only changed here is kept, and a JSON file under data/ that both
+    sides changed is merged value by value - records by their key (``portal_pipeline.jsonmerge``).  What both changed
+    differently is reported (where, for a data file) and kept, unless --overwrite.  All or nothing: with anything left
+    to decide, nothing is written and the marker stays."""
     store = ctx.data()
     portal = _checkout(ctx, must_exist=not ctx.args.init)
     release_id = ctx.args.release or R.read_pointer(store)[0]["releaseId"]
@@ -892,13 +941,18 @@ def cmd_pull(ctx: Ctx) -> int:
         except R.ReleaseError:
             ctx.say(f"  （checkout 記錄的來源 release {c(base_id, 40)} 已經讀不到：無法分辨哪些檔案是妳改的）")
 
-    write: list[str] = []      # new here, or untouched here and changed upstream
+    write: list[str] = []      # new here, or untouched here and changed upstream, or merged (see ``merged``)
     kept: list[str] = []       # changed here only
     conflict: list[str] = []   # changed on both sides
     unknown: list[str] = []    # differs, and there is no base to tell who changed it
     blocked: list[str] = []    # cannot be written safely
     remove: list[str] = []     # removed upstream, untouched here
     deleted: list[str] = []    # removed here on purpose (it was in the release this checkout came from), unchanged upstream
+    merged: dict[str, bytes] = {}            # changed on both sides and merged value by value: written instead of the release's
+    tally: dict[str, J.Merge] = {}           # ... what came from which side
+    clashes: dict[str, list[J.Clash]] = {}   # a data file in ``conflict``: where the two sides changed it differently
+    unread: dict[str, str] = {}              # a data file in ``conflict`` because a version of it is not JSON: why
+    covered: list[str] = []                  # changed on both sides, and merged it is the checkout's version as it is
     for rel, data in sorted(files.items()):
         mine, problem = _local(portal, rel)
         if problem:
@@ -917,6 +971,25 @@ def cmd_pull(ctx: Ctx) -> int:
             write.append(rel)
         elif data == base.get(rel):
             kept.append(rel)
+        elif rel in base and merged_by_value(rel):
+            # Changed on both sides.  A record the agent edited and a record a person added are no conflict: taken as a
+            # whole, one of them would be lost (the release's, by a later push --force; the person's, by --overwrite).
+            try:
+                result = J.merge_bytes(base[rel], data, mine)
+            except J.Unmergeable as e:
+                unread[rel] = f"{_UNREAD_SIDE[e.side]}的版本{_UNREAD_WHY[e.why]}"
+                conflict.append(rel)
+                continue
+            if result.clashes:
+                clashes[rel] = result.clashes
+                conflict.append(rel)
+            elif result.equals == "release":     # what the checkout changed, the release changed the same way
+                write.append(rel)
+            elif result.equals == "checkout":    # ... and the other way round (or the release's stamp is the earlier one)
+                covered.append(rel)
+            else:
+                merged[rel], tally[rel] = J.dump(result.value), result
+                write.append(rel)
         else:
             conflict.append(rel)
     for rel in sorted(base or {}):
@@ -938,11 +1011,16 @@ def cmd_pull(ctx: Ctx) -> int:
     ctx.say(f"{store.uri()} 的 release {release_id} → {portal}"
             + ("（有檔案要先決定：這一次不會寫入或刪除任何東西，以下是處理完之後會做的事）" if stuck and not ctx.args.dry_run else ""))
     for rel in to_write:
-        ctx.say(f"  {'~' if (portal / rel).exists() else '+'} {rel}")
+        if rel in merged:
+            ctx.say(f"  ≈ {rel}（合併：上線版本 +{tally[rel].from_release} 筆、本機 +{tally[rel].from_checkout} 筆）")
+        else:
+            ctx.say(f"  {'~' if (portal / rel).exists() else '+'} {rel}")
     for rel in to_remove:
         ctx.say(f"  - {rel}")
     if kept:
         ctx.say(f"  保留妳改過的 {len(kept)} 個檔案（上線的資料沒有動到它們）：" + "、".join(kept[:8]) + ("…" if len(kept) > 8 else ""))
+    if covered:
+        ctx.say(f"  保留妳改過的 {len(covered)} 個檔案（和上線的修改逐筆合併後，結果就是妳的版本）：" + "、".join(covered[:8]) + ("…" if len(covered) > 8 else ""))
     if deleted:
         ctx.say(f"  保留妳刪除的 {len(deleted)} 個檔案（沒有寫回；下一次 push 會把它們從上線的資料移除，要取回請加 --overwrite）："
                 + "、".join(deleted[:8]) + ("…" if len(deleted) > 8 else ""))
@@ -955,11 +1033,16 @@ def cmd_pull(ctx: Ctx) -> int:
         ctx.say(f"  無法寫入 {len(blocked)} 個檔案：" + "、".join(blocked[:8]))
     if conflict and not overwrite:
         ctx.say(f"  ✘ {len(conflict)} 個檔案本機和上線都改過，沒有覆蓋：" + "、".join(conflict[:8]) + ("…" if len(conflict) > 8 else ""))
+        _report_clashes(ctx, conflict, clashes, unread)
     if unknown and not overwrite:
         ctx.say(f"  ✘ {len(unknown)} 個檔案和上線的版本不同，而 checkout 沒有來源紀錄，無法分辨是誰改的，沒有覆蓋："
                 + "、".join(unknown[:8]) + ("…" if len(unknown) > 8 else ""))
     if undecided:
-        ctx.say("    要以上線的版本為準：加 --overwrite（本機的修改會被取代）；要以本機為準：push --force")
+        ctx.say("    要以上線的版本為準：加 --overwrite（整個檔案換成上線的版本，本機的修改會被取代）；要以本機為準：push --force"
+                + ("（整個檔案以 checkout 為準：上線在同一個檔案的其他更新也會被蓋掉）" if clashes else ""))
+        if clashes:
+            ctx.say("    逐處決定：把上面列出的位置在 checkout 裡改成上線的值，再 pull 一次（其他修改照樣逐筆合併）；"
+                    "要保留妳的值，等 pull 完成後再改回來，然後 push。")
     if ctx.args.dry_run:
         # the preview ends the way the pull would: a script that asks "would it go through?" gets the answer
         ctx.say("（預覽）沒有寫入任何東西。" + (f"實際執行時會因為上面 {stuck} 個要先決定的檔案而停下，什麼都不寫。" if stuck else ""))
@@ -975,11 +1058,16 @@ def cmd_pull(ctx: Ctx) -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
         if portal not in path.resolve().parents:
             raise ScriptError(f"拒絕寫到 checkout 之外：{rel}")
-        path.write_bytes(files[rel])
+        path.write_bytes(merged.get(rel, files[rel]))
     for rel in to_remove:
         (portal / rel).unlink()
+    # The checkout is now the release it pulled with the edits made here on top - merged ones too: those are still
+    # changes of this checkout (it differs from its base there), and the next push publishes them.
     _write_marker(portal, release_id, store.uri())
-    ctx.say(f"✔ 寫入 {len(to_write)} 個檔案" + (f"、刪除 {len(to_remove)} 個" if to_remove else "") + f"；checkout 現在以 release {release_id} 為基準")
+    ctx.say(f"✔ 寫入 {len(to_write)} 個檔案" + (f"（其中 {len(merged)} 個逐筆合併）" if merged else "")
+            + (f"、刪除 {len(to_remove)} 個" if to_remove else "") + f"；checkout 現在以 release {release_id} 為基準")
+    if merged or kept or covered:
+        ctx.say("  妳在 checkout 裡的修改（包含合併進去的）還沒有發布：確認後用 push 發布。")
     return OK
 
 
@@ -1247,9 +1335,9 @@ def build_parser() -> argparse.ArgumentParser:
                                                    "範圍以外的檔案維持上線中的版本")
     u.add_argument("--delete", action="store_true", help="checkout 沒有來源紀錄時，也刪除上線中有、checkout 沒有的檔案（有 --only 時只在那個範圍內）")
     u.add_argument("--force", action="store_true", help="兩邊都改過的檔案以 checkout 為準（不會略過資料驗證）")
-    d = checkout("pull", "把上線中（或指定）的 release 合併回 portal checkout（不會覆蓋妳改過的檔案）")
+    d = checkout("pull", "把上線中（或指定）的 release 合併回 portal checkout（data/ 的 JSON 逐筆合併；不會覆蓋妳改過的內容）")
     d.add_argument("--release", metavar="ID", help="指定 release（預設是上線中的）")
-    d.add_argument("--overwrite", action="store_true", help="本機和上線不同、無法自動合併的檔案，以上線的版本取代（上線已移除的就刪除）")
+    d.add_argument("--overwrite", action="store_true", help="無法自動合併的檔案（兩邊把同一處改得不一樣、或沒有來源紀錄），整個以上線的版本取代（上線已移除的就刪除）")
     d.add_argument("--init", action="store_true", help="目的資料夾還不是 portal repo 也可以（建立一份本機資料副本）")
 
     pub = sub.add_parser("publish", help="把某一次研究的結果（run 紀錄或 proposal）送去待核准，或直接發布")

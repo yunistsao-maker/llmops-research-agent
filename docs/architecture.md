@@ -233,6 +233,8 @@ agent 的紀錄只能讓提案多等一個人，不能讓它少等。
 `PlatformInventory` 與研究資料的七種檔案）與跨檔規則；只拒絕「這次會帶進來的新問題」，已經在線上的問題不會卡住無關的更新。
 push 是**逐檔三方合併**：以 checkout 當初 pull 下來的那個 release 為基準，checkout 沒改的檔案維持上線中的版本、只有 checkout 改過的採用 checkout 的、
 兩邊都改過的是衝突（預設停下來）。所以舊的 checkout 不會把 agent 的更新蓋掉，別人剛發布的測試結果也不會被刪掉。
+衝突用 `portalctl pull` 解決：它以同一個基準把上線的 release 合併回 checkout，兩邊都改過的 `data/` JSON 逐筆合併（`portal_pipeline/jsonmerge.py`，
+紀錄依 `patch.record_key` 對齊），只有兩邊把同一個值改得不一樣才停下來、列出 JSON pointer；合併後再 push。
 `--force`（衝突時以 checkout 為準）與 `--allow-invalid`（驗證沒過仍然發布）是兩個分開的開關。
 兩個開關都不能發布一份缺少 UI 必要檔案的資料（schema、`sources`、`catalog`、`lifecycle`、`litellm`）：那不是「資料有問題」，是整個 portal 打不開。
 checkout 裡**沒有被讀取**的東西（不是 UI 會讀的檔案、symlink）不算「checkout 把它刪了」：上線中的那一份維持原狀。
