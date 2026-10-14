@@ -26,6 +26,11 @@
                     pipeline 的 Publish 步驟：對上線中的資料重新驗證 → 發布／等待核准／拒絕
 ```
 
+每日的 role（`role` 欄位）在 `OUTPUT_URI` 底下另外寫一筆交接紀錄 `handoff/<台北日期>/<HHMMSS>-<role>-<runId>.json`（摘要、`unverified`、
+提案的 `leads`、`checked` 裡以 `not reached:` 開頭的項目），下一個 role 開始時把它們當成資料放進任務說明；讀寫失敗只記 log。
+`portal_health()` 工具（`research/portal/health.py`）不連網，對載入的 portal 資料做整體檢查（catalog／deep dive／watchlist／
+digest／lifecycle），是 `portal-reviewer` 的起點。詳見 [daily-agents-design](daily-agents-design.md) 4.1。
+
 `PORTAL_DATA_URI` 指到資料位置（`s3://<bucket>/portal/`）時，agent 讀 `manifest.json` 指到的 release（`releases/<id>/schema` 與
 `releases/<id>/data`），提案裡會記下它是依哪一個 release 產生的。沒有設定時讀的是內建的 SAMPLE 快照，這種提案 pipeline 一律拒絕發布。
 

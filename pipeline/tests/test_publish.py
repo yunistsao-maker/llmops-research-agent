@@ -1971,6 +1971,42 @@ def test_the_radar_editor_s_curation_suggestions_reach_the_approver():
     assert "curation" not in P.brief({"id": "prop-2", "ops": [], "checked": ["plain string"]})
 
 
+def test_the_portal_reviewer_s_checks_reach_the_approver_failures_first():
+    from portal_pipeline import notify as N
+
+    checked = [{"topic": "Bedrock lifecycle", "result": "no change"},
+               *({"topic": "portal-qa", "result": f"PASS 檢查 {i}"} for i in range(10)),
+               {"topic": "portal-qa", "result": "TODO Gemini 3.5 Pro 是否已 GA：官方頁面讀不到"},
+               {"topic": "portal-qa", "result": "FAIL digest 2026-10-11 說 claude-haiku-5-5 已加入 catalog，\n但 catalog 沒有這筆"},
+               {"topic": "portal-qa", "result": "檢查了 watchlist"}, {"topic": "portal-qa", "result": ""}, "portal-qa"]
+    info = P.brief({"id": "prop-1", "summary": "s", "ops": [], "checked": checked})
+    assert info["portalQa"][0].startswith("FAIL digest") and "\n" not in info["portalQa"][0] and info["portalQa"][1].startswith("TODO")
+    assert info["portalQa"][2] == "檢查了 watchlist" and len(info["portalQa"]) == P.MAX_PORTAL_QA  # a line without a verdict before the passes
+    assert info["portalQaCounts"] == {"FAIL": 1, "TODO": 1, "PASS": 10, "other": 1}
+    text = N._proposal_block(info)
+    assert "Portal 健康檢查（FAIL 1、TODO 1、PASS 10、other 1）：" in text and "  - FAIL digest 2026-10-11" in text
+    assert text.index("FAIL digest") < text.index("TODO Gemini") < text.index("PASS 檢查 0") and "還有 1 項" in text and "no change" not in text
+    assert "portalQa" not in P.brief({"id": "prop-2", "ops": [], "checked": [{"topic": "radar-curation", "result": "merge"}]})
+    assert "Portal 健康檢查" not in N._proposal_block(P.brief({"id": "prop-2", "ops": []}))
+    state = P.Outcome("published", "agent", proposal=info).to_state()  # what travels through the state machine stays small
+    assert len(json.dumps(state, ensure_ascii=False)) < 10_000
+
+
+def test_a_proposal_s_leads_are_accepted_and_never_reach_the_portal(plane):
+    """`leads` are notes from one research role to another (the agent's handoff records): the publisher ignores them."""
+    plane.bootstrap()
+    record = accepted_run()
+    note = "Foundry 表的替代模型寫 claude-sonnet-5-5，請確認 Anthropic 的棄用頁。"
+    record["proposal"]["leads"] = [{"forRole": "vendor-api-researcher", "note": note,
+                                    "url": "https://learn.microsoft.com/en-us/azure/foundry/openai/concepts/model-retirement-schedule"}]
+    assert P.refusals(record["proposal"], record, P.Policy()) == []
+    outcome = P.publish_proposal(plane.data, record, control=plane.control, actor="schedule", now=T1)
+    assert outcome.status == "published", outcome.reasons
+    after = live(plane)
+    assert not any(note.encode("utf-8") in body for body in after.files.values())
+    assert "leads" not in P.brief(record["proposal"]) and note not in json.dumps(outcome.to_state(), ensure_ascii=False)
+
+
 def test_a_full_security_run_with_prompt_text_is_never_published():
     """sec_suite.py keeps the full run (every prompt and response, harmful-request datasets among them) on the tester's machine;
     only the aggregate (--publish-summary) may go into a release, whatever the schema of the day says."""

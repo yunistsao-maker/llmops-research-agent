@@ -213,12 +213,16 @@ def test_show_leaves_nothing_of_a_proposal_out(env):
                                         "url": "https://learn.microsoft.com/new-page", "accessed": "2026-10-02"}]
     record["proposal"]["asOfFiles"] = ["data/lifecycle.json"]
     record["proposal"]["unverified"] = [{"claim": "Foundry 的日期是否含時區", "reason": "頁面沒有寫"}]
+    record["proposal"]["checked"] = [{"topic": "portal-qa", "result": "FAIL claude-haiku-5-5 沒有 deep dive"},
+                                     {"topic": "portal-qa", "result": "PASS watchlist 沒有已在 catalog 的模型"}]
+    record["proposal"]["leads"] = [{"forRole": "any", "note": "給下一個 role 的線索"}]  # (notes between roles: not for the portal)
     record_file = env.portal.parent / "record.json"
     record_file.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
     assert env.run("publish", str(record_file)) == 4
     assert env.run("show", PROP) == 0
     for expected in ("新增的來源（1）", "ms-new-page", "https://learn.microsoft.com/new-page",
-                     "「資料查核至」（asOf）改為 2026-10-02：data/lifecycle.json", "未能確認的項目（1）", "Foundry 的日期是否含時區（頁面沒有寫）"):
+                     "「資料查核至」（asOf）改為 2026-10-02：data/lifecycle.json", "未能確認的項目（1）", "Foundry 的日期是否含時區（頁面沒有寫）",
+                     "Portal 健康檢查（2）：", "  - FAIL claude-haiku-5-5 沒有 deep dive", "  - PASS watchlist"):
         assert expected in env.out, expected[:60]
     assert squash(long_note) in squash(env.out)  # all of it, over as many lines as it takes
 

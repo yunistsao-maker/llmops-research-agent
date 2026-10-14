@@ -439,6 +439,12 @@ def cmd_show(ctx: Ctx) -> int:
             ctx.say(f"Radar 整理建議（{len(curation)}，確認後寫進 portal repo 的 radar/curation.json）：")
             for x in curation:
                 ctx.say("  - " + c(x.get("result"), 600))
+        qa = [x for x in proposal.get("checked") or [] if isinstance(x, dict) and x.get("topic") == P.PORTAL_QA_TOPIC] \
+            if isinstance(proposal.get("checked"), list) else []
+        if qa:
+            ctx.say(f"Portal 健康檢查（{len(qa)}）：")
+            for x in qa:
+                ctx.say("  - " + c(x.get("result"), 600))
         ctx.say()
         ctx.say(f"核准這份內容：portalctl.py approve {c(target, 120)} --sha256 {c(sha, 80)}")
         ctx.say(f"捨棄：portalctl.py discard {c(target, 120)}")

@@ -32,6 +32,8 @@ class Role:
     #: does this role write the day's digest?
     digest: bool = False
     title: str = ""
+    #: does this role look at the portal as a whole (and so get every handoff note of the day, research/handoff.py)?
+    overview: bool = False
 
 
 ROLES: dict[str, Role] = {r.name: r for r in (
@@ -41,7 +43,8 @@ ROLES: dict[str, Role] = {r.name: r for r in (
     Role("vendor-api-researcher", (SHARED, "vendor-api-model-research"), ("lifecycle", "pricing", "new-models"), title="Vendor APIs"),
     Role("litellm-researcher", (SHARED, "litellm-release-research"), ("litellm",), title="LiteLLM"),
     Role("open-model-scout", (SHARED, "open-model-scouting"), ("open-models",), title="Open-weight models"),
-    Role("radar-editor", (SHARED, "radar-editing"), ("new-models", "regulatory"), digest=True, title="Release Radar editor"),
+    Role("portal-reviewer", (SHARED, "portal-quality-review"), ("coverage",), title="Portal QA reviewer", overview=True),
+    Role("radar-editor", (SHARED, "radar-editing"), ("new-models", "regulatory"), digest=True, title="Release Radar editor", overview=True),
 )}
 
 

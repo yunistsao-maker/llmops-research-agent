@@ -257,7 +257,7 @@ portal repo 的 `data/` 變成**工作副本與種子**：第一次用它建立�
 | 網頁是不可信的輸入 | agent 端：SafeFetcher（只允許 https、擋私有網段與 metadata IP）、引文必須逐字出現在抓回的頁面上、信任層級由網域決定、偵測像是對 AI 下指令的文字（英文與中文；全形、形似字母、隱形字元等寫法先還原再比對）。頁面的內文、標題、大綱、連結都掃；搜尋結果的標題、摘要、日期與網址也掃，命中的不給模型看，日期欄位只放行真的日期。這是啟發式的偵測，會漏、偶爾也會誤判，所以它只決定「要不要請人看一眼」，不是唯一的防線 |
 | 模型輸出是不可信的輸入 | 發布端：不呼叫模型、不上網；重新套用與驗證；關卡從實際的差異判斷；只允許改研究資料；有疑慮的提案等人 |
 | 通知訊息與指令列輸出 | 所有外來的文字（模型、網頁、提案的每個欄位、錯誤訊息）一律壓成單行、去掉控制字元與方向控制字元、截斷，無法偽裝成訊息裡給人執行的指令，也無法操縱終端機；subject 只有 ASCII |
-| 最小權限 | runtime 角色：讀 `portal/*`（明確拒絕 `data/internal/` 與 `runs/`）、寫 `research/*`。Publish function：讀寫 `portal/*` `pipeline/*`、讀 `research/*`，不能刪除 `portal/` 底下任何東西。其餘 function 只有各自需要的動作；state machine 只能呼叫這四個 function 與發通知 |
+| 最小權限 | runtime 角色：讀 `portal/*`（明確拒絕 `data/internal/` 與 `runs/`）、寫 `research/*`，自己的結果只讀得到 role 之間的交接紀錄 `research/handoff/*`（[daily-agents-design](daily-agents-design.md) 4.1）。Publish function：讀寫 `portal/*` `pipeline/*`、讀 `research/*`，不能刪除 `portal/` 底下任何東西。其餘 function 只有各自需要的動作；state machine 只能呼叫這四個 function 與發通知 |
 | bucket | private、BlockPublicAccess、強制 TLS、SSE-S3、versioning；只有 CloudFront（OAC，限定這個 distribution）讀得到 `portal/*` |
 | 資料位置的存取 | 網址第一段是 token（CloudFront Function 檢查後移除）；可再加 WAF（例如辦公室 IP allow list）。**token 是分享連結等級的保護，不是身分驗證**（見下） |
 | 誰可以發布 | 有 `OperatorPolicy`（透過流程）或 S3 寫入權限（`--direct`）的人。發布紀錄裡的操作者名稱（`--by`）是自己填的，方便辨識，不是身分證明；要查證是誰做的，看 Step Functions 的 execution 與 CloudTrail |

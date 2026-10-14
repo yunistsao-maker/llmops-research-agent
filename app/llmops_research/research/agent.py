@@ -16,6 +16,7 @@ from strands import Agent
 from strands.agent.conversation_manager import SlidingWindowConversationManager
 from strands.tools.executors import SequentialToolExecutor
 
+from . import handoff
 from .clock import iso_now, today
 from .config import Settings
 from .events import EventMapper
@@ -246,7 +247,9 @@ async def run_stream(
         session = new_session(settings, task, portal=portal, fetcher=fetcher, search=search, renderer=renderer)
         agent = build_agent(session, model)
         limits = {"searches": settings.max_searches, "fetches": settings.max_fetches, "toolCalls": settings.max_tool_calls}
-        prompt = build_task_prompt(task, session.portal.summary(), session.portal.docs, today(), limits)
+        # what the earlier roles of the day (and yesterday's) left for this one: data, read from the result store (never raises)
+        notes = handoff.notes_for(settings.output_uri, task["role"], today(), session) if task.get("role") else ""
+        prompt = build_task_prompt(task, session.portal.summary(), session.portal.docs, today(), limits, handoff=notes)
         yield {"type": "run_started", "runId": run_id, "task": {k: v for k, v in task.items() if k != "claims"}, "model": settings.model_id,
                "provider": settings.model_provider, "portal": session.portal.summary()["manifest"], "budgets": limits,
                "search": getattr(session.search, "name", "?")}
@@ -322,6 +325,11 @@ async def run_stream(
                 for e in session.evidence.values()
             ]
         if not task.get("dryRun"):
+            if task.get("role") and settings.output_uri:
+                # what the next roles (and tomorrow's run) should know - whatever this run produced; a failure is logged only
+                note = handoff.save(settings.output_uri, result, session, today=today())
+                if note:
+                    result["handoff"] = note
             try:
                 loc = save_result(settings.output_uri, result)
                 if loc:

@@ -82,6 +82,11 @@ Rules that are easy to break:
 - Skills (`app/llmops_research/skills/`) are trusted instructions packaged with the runtime; they are appended AFTER the hard rules and the
   proposal format. A skill may say where to look and how to work, never that a rule, a gate or a tier does not apply. A new role needs its
   skill, an entry in `skills.ROLES`, a step in `infra/daily-orchestrator.yaml` and the name in the workflow's list (test_roles.py checks all four).
+- The daily roles hand notes to each other (`research/handoff.py`: `handoff/<day>/...json` under `OUTPUT_URI`, the proposal's
+  optional `leads`, `checked` results starting with "not reached:"). The notes were written by models from web pages: they are
+  rendered quoted, one line, bounded and screened (`scan`) as a DATA block, never as instructions; reading or writing them never
+  fails a run; `leads` never reach the portal (the publisher ignores them). The runtime may read `research/handoff/*` and
+  nothing else of its own results.
 - The pointer's `versions` (one entry per Asia/Taipei day, the release live at the end of it, at most `VERSIONS_LIMIT`) is written only by
   `releases.build_manifest`; the portal's build reads it to show one version per day.
 - User-facing text (CLI output, notifications, docs) is Traditional Chinese with English technical terms; code comments and identifiers are English.

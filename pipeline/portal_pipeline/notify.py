@@ -225,7 +225,22 @@ def _proposal_block(p: Any) -> str:
         f"未能確認的項目：{ext(p.get('unverified'), 6)} 項（請在 portal 的「本期尚未驗證」核對）" if p.get("unverified") else None,
         *(["Radar 整理建議（確認後由人寫進 portal repo 的 radar/curation.json）："]
           + [f"  - {ext(s, 300)}" for s in p["curation"][:8]] if isinstance(p.get("curation"), list) and p["curation"] else []),
+        *_portal_qa(p),
     )
+
+
+def _portal_qa(p: dict) -> list[str]:
+    """The portal QA reviewer's check results (publish.brief: FAIL first, at most 12 lines)."""
+    lines = p.get("portalQa")
+    if not isinstance(lines, list) or not lines:
+        return []
+    counts = p.get("portalQaCounts") if isinstance(p.get("portalQaCounts"), dict) else {}
+    told = "、".join(f"{ext(k, 10)} {ext(v, 6)}" for k, v in list(counts.items())[:4] if isinstance(v, int) and v)
+    total = sum(v for v in counts.values() if isinstance(v, int) and not isinstance(v, bool))
+    shown = [f"  - {ext(s, 300)}" for s in lines[:12]]
+    if total > len(shown):
+        shown.append(f"  …（還有 {total - len(shown)} 項，完整內容在提案的 checked）")
+    return [f"Portal 健康檢查（{told}）：" if told else "Portal 健康檢查：", *shown]
 
 
 def review_block(review: Any, *, limit: int | None = MAX_CHANGES, width: int | None = 160, proposal_id: str = "") -> str:

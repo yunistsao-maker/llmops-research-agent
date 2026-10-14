@@ -148,6 +148,19 @@ Resources:
             Effect: Allow
             Action: s3:PutObject
             Resource: !Sub "${DataBucket.Arn}/research/*"
+          # The daily roles hand notes to each other (research/handoff.py): each run reads the day's notes back - and
+          # nothing else it wrote (run records and proposals stay unreadable to the runtime).
+          - Sid: ReadHandoffNotes
+            Effect: Allow
+            Action: s3:GetObject
+            Resource: !Sub "${DataBucket.Arn}/research/handoff/*"
+          - Sid: ListHandoffNotes
+            Effect: Allow
+            Action: s3:ListBucket
+            Resource: !GetAtt DataBucket.Arn
+            Condition:
+              StringLike:
+                s3:prefix: ["research/handoff/*"]
           # The agent's loader never opens these; the deny makes that a property of the role, not only of the code.
           - Sid: NeverReadInternalInventoryOrTestResults
             Effect: Deny
