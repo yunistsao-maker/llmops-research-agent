@@ -1651,7 +1651,8 @@ def _check_topic(rep: Report, where: str, item: dict) -> None:
     rep.err(f"{where}/topic: {str(topic)[:120]!r} is not a topic. A topic names the subject of the entry the same way every day, so "
             "that the portal merges the entries about it into one card: \"<area>:<subject>[:<aspect>]\" in lower case - letters, digits "
             f"and '-' (after the first ':' also '.' and '_'), 2 to 4 parts, at most {_TOPIC_MAX} characters; the subject is a catalog "
-            "model id, litellm, a CVE id ... (\"pricing:claude-sonnet-5-5\", \"lifecycle:gemini-2-5-pro:vertex\", \"security:cve-2026-1234\")")
+            "model id, litellm, a CVE id ... (\"model:claude-haiku-5-5\", \"pricing:claude-sonnet-5-5\", \"lifecycle:bedrock:claude-sonnet-4-5\", "
+            "\"cve:cve-2026-89032\", \"litellm:recommended-version\"; the radar-editing skill lists the areas in use)")
 
 
 def _check_digest(session: ResearchSession, rep: Report, digest: dict, staged, url_to_sid: dict[str, str]) -> None:

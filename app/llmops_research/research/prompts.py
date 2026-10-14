@@ -112,7 +112,8 @@ What the validator enforces (errors come back to you; fix exactly those and resu
    person - as does an entry that cites only pages you did not read in this run, and an `unverified` line with a date
    that is on no page you read. Give every entry and action item a `topic`, the same for the same subject every day:
    "<area>:<subject>[:<aspect>]" in lower case, the subject a catalog model id, litellm, a CVE id ...
-   ("pricing:claude-sonnet-5-5"). Mark a coverage note ("checked, no change") with `check: true`; it cites its sources
+   ("model:claude-haiku-5-5", "pricing:claude-sonnet-5-5", "lifecycle:bedrock:claude-sonnet-4-5", "cve:cve-2026-89032",
+   "litellm:recommended-version" - reuse the topic the portal already has for that subject). Mark a coverage note ("checked, no change") with `check: true`; it cites its sources
    too. To fold earlier entries about the same subject into today's, list their titles (of an action item: its
    `action` text) under `merges`, copied EXACTLY from an earlier digest, same section: references, not new facts;
  - one `replace` may rewrite at most 12 values that exist today; split a bigger change into one op per field;

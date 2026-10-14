@@ -345,3 +345,23 @@ def test_a_note_that_cannot_be_read_or_written_does_not_stop_the_run(tmp_path, m
     res = role_run("azure-researcher", azure_script(), tmp_path)
     assert res["status"] == "accepted" and "handoff" not in res and res["saved"].endswith(".json")
     assert PR.HANDOFF_HEADER not in res["_model"].calls[0]["first_user_text"]
+
+
+def test_the_portal_reviewer_s_qa_lines_reach_the_overview_roles_only():
+    checked = [{"topic": "portal-qa", "result": "PASS catalog-vs-deep-dive: 11/11"},
+               {"topic": "portal-qa", "result": "FAIL comparison:google: Gemini 4 Argon GA 2026-10-13, not in the catalog"},
+               {"topic": "Bedrock lifecycle table", "result": "no change"},
+               {"topic": "portal-qa", "result": "TODO stale: 3 lifecycle events older than 14 days"}]
+    result = run_result()
+    result["task"]["role"] = "portal-reviewer"
+    result["proposal"]["checked"] = checked
+    built = HO.build_record(result, day="2026-10-02")
+    assert built["qa"][0].startswith("FAIL") and built["qa"][1].startswith("TODO") and built["qa"][2].startswith("PASS")
+    stored = HO.clean_record(built)
+    assert stored["qa"] == built["qa"]
+    notes = {"today": [stored], "yesterday": []}
+    editor, _ = HO.render(notes, "radar-editor")
+    assert "Portal QA report of today" in editor and "Gemini 4 Argon GA 2026-10-13" in editor
+    researcher, _ = HO.render(notes, "bedrock-researcher")
+    assert "Portal QA report" not in researcher and "Gemini 4 Argon" not in researcher
+    assert HO.clean_record({**built, "qa": "FAIL not a list"})["qa"] == []

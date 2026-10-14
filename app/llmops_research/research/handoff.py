@@ -6,8 +6,9 @@ could not confirm or did not reach is invisible to the others and to tomorrow's 
 
 * After a role run - accepted or not - a small record is written next to the run records, in the same result store
   (``OUTPUT_URI``, S3 or a folder): ``handoff/<YYYY-MM-DD Asia/Taipei>/<HHMMSS>-<role>-<runId>.json`` with the run's
-  status, summary, ``unverified`` lines, ``leads`` (findings for another role, proposal.py) and ``notReached`` (the
-  ``checked`` entries whose result says "not reached: ..." or "skipped: ...").
+  status, summary, ``unverified`` lines, ``leads`` (findings for another role, proposal.py), ``notReached`` (the
+  ``checked`` entries whose result says "not reached: ..." or "skipped: ...") and ``qa`` (the portal reviewer's
+  ``checked`` lines of topic "portal-qa": PASS / FAIL / TODO - what the Radar editor must not contradict).
 * At the start of a role run the newest records of the day are read back (the first role of the day - no record yet -
   and the overview roles also get yesterday's leads and not-reached items; every role gets the leads addressed to it and
   its own not-reached items of yesterday) and rendered into the task brief as a DATA block.
@@ -44,6 +45,9 @@ MAX_RECORD_BYTES = 64_000
 MAX_BLOCK = 12_000
 #: the convention for a worklist item a run did not get to: a `checked` entry whose result starts with one of these
 NOT_REACHED = re.compile(r"^\s*(?:not reached|skipped)\b", re.I)
+#: the `checked` topic of the portal reviewer's report lines (pipeline publish.py carries the same lines into notifications)
+QA_TOPIC = "portal-qa"
+MAX_QA = 20
 WITHHELD = "[withheld: this note reads like instructions to an AI]"
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
@@ -80,6 +84,15 @@ def not_reached(checked: Any) -> list[dict]:
     return out[:MAX_ITEMS]
 
 
+def qa_lines(checked: Any) -> list[str]:
+    """The ``checked`` results of topic "portal-qa" (the portal reviewer's PASS / FAIL / TODO lines), FAIL and TODO first."""
+    lines = [_line(c.get("result"), MAX_RESULT) for c in checked if isinstance(c, dict) and c.get("topic") == QA_TOPIC] \
+        if isinstance(checked, list) else []
+    rank = {"FAIL": 0, "TODO": 1}
+    lines = [x for x in lines if x]
+    return sorted(lines, key=lambda x: rank.get(x.split(" ", 1)[0].upper(), 2))[:MAX_QA]
+
+
 # ---------------------------------------------------------------------------------------------- writing
 def build_record(result: dict, session: Any = None, *, day: str) -> dict:
     """The handoff record of a finished run: from its accepted proposal, else from the last proposal it submitted."""
@@ -100,6 +113,7 @@ def build_record(result: dict, session: Any = None, *, day: str) -> dict:
         "unverified": unverified[:MAX_ITEMS],
         "leads": leads[:MAX_ITEMS],
         "notReached": not_reached(parts.get("checked")),
+        "qa": qa_lines(parts.get("checked")),
     }
 
 
@@ -138,6 +152,8 @@ def clean_record(raw: Any) -> dict | None:
         "leads": [lead for lead in (_clean_lead(x) for x in lists["leads"][:MAX_ITEMS]) if lead],
         "notReached": [{"topic": _line(n.get("topic"), MAX_TOPIC), "result": _line(n.get("result"), MAX_RESULT)}
                        for n in lists["notReached"][:MAX_ITEMS] if isinstance(n, dict)],
+        "qa": [line for line in (_line(x, MAX_RESULT) for x in (raw.get("qa") if isinstance(raw.get("qa"), list) else [])[:MAX_QA]
+                                 if isinstance(x, str)) if line],
     }
 
 
@@ -192,6 +208,11 @@ def render(notes: dict, role: str) -> tuple[str, list[str]]:
     if missed:
         lines += ["Not reached by earlier runs (worklist items they did not get to):"]
         lines += [f"- [{w}] {r['role']}: {q(n['topic'], r)} {q(n['result'], r)}" for w, r, n in missed]
+    if overview:
+        qa = [(r, line) for r in today_recs for line in r.get("qa") or []]
+        if qa:
+            lines += ["Portal QA report of today (portal-reviewer; the digest must not contradict a FAIL line):"]
+            lines += [f"- {q(line, r)}" for r, line in qa]
     if today_recs:
         lines += ["Earlier runs today:"]
         for r in today_recs:
