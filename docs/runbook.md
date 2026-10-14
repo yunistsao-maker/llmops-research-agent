@@ -268,8 +268,8 @@ execution 的細節：Step Functions console → state machine → 那一次 exe
 
 | prefix | 內容 | 誰寫 | 保存 |
 | --- | --- | --- | --- |
-| `portal/manifest.json` | 指標（含自動發布的暫停旗標與最近 60 次發布的摘要） | Publish function、`portalctl` | 舊版本 180 天（versioning） |
-| `portal/releases/<id>/` | 不可變的資料版本 | 同上 | 永久（rollback 需要） |
+| `portal/manifest.json` | 指標（含自動發布的暫停旗標、最近 60 次發布的摘要，與最近 30 天每個台北日期結束時上線的 release：`versions`） | Publish function、`portalctl` | 舊版本 180 天（versioning） |
+| `portal/releases/<id>/` | 不可變的資料版本：每一個 release 都是它當時內容的紀錄（`release.json` 記著來源、差異與引文） | 同上 | 永久，永不刪除（rollback 需要；`versions` 只是指向其中 30 天的名單） |
 | `research/runs/`、`research/proposals/` | 每次研究的完整紀錄（提案、引文、抓過的頁面、token 用量） | agent | `ResultRetentionDays`（預設 365 天） |
 | `pipeline/pending/`、`decided/`、`rejected/` | 待核准、已決定、被拒絕的提案 | Publish function、`portalctl` | 永久（檔案很小） |
 | `artifacts/` | Lambda bundle | `build_lambdas.py --upload` | 永久；舊的可以手動刪 |

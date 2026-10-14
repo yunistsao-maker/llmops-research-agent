@@ -76,6 +76,7 @@ OK, CHECK_FAILED, USAGE, ENV, NOT_PUBLISHED, FAILED = 0, 1, 2, 3, 4, 5
 _UNDECODED = re.compile("[\ud800-\udfff]")
 MARKER = ".portal-release.json"  # written into a checkout by pull / bootstrap: which release its files came from
 GLOBAL_FLAGS = ("data", "state", "state_machine", "by", "direct")
+STATUS_VERSIONS = 7  # daily versions that `status` names one by one (the pointer keeps releases.VERSIONS_LIMIT days)
 #: Everything printed that came out of a stored document goes through this: one cleaned line, marked as text from
 #: elsewhere, so that ``Ctx.say`` lays the line it is on out (see portal_pipeline.notify: ``ext`` / ``layout``).
 c = N.ext
@@ -322,8 +323,11 @@ def cmd_status(ctx: Ctx) -> int:
     ctx.say(f"內容　　　{len(manifest.get('models') or [])} 個 deep dive、{len(digests)} 份 digest（最新 {c((digests or ['—'])[-1], 40)}）、"
             f"{len(manifest.get('compatRuns') or []) + len(manifest.get('perfRuns') or [])} 份測試結果、平台清單 {'有' if manifest.get('hasInventory') else '無（顯示 example）'}")
     versions = R.versions_of(manifest)
-    ctx.say("每日版本　" + ("、".join(f"{v['date']}（{c(v['releaseId'], 40)}）" for v in versions) if versions
-                          else "（還沒有：下一次發布會從發布紀錄補上最近的日期）"))
+    # (the pointer lists up to a month of days: the newest few are named, the rest are counted)
+    shown = "、".join(f"{v['date']}（{c(v['releaseId'], 40)}）" for v in versions[:STATUS_VERSIONS])
+    if len(versions) > STATUS_VERSIONS:
+        shown += f"…共 {len(versions)} 天（最早 {versions[-1]['date']}；保留最近 {R.VERSIONS_LIMIT} 天，release 本身都保留）"
+    ctx.say("每日版本　" + (shown if versions else "（還沒有：下一次發布會從發布紀錄補上最近的日期）"))
     ctx.say("自動發布　" + _hold_line(R.hold_of(manifest)))
     pending = _pending(ctx)
     if pending is None:

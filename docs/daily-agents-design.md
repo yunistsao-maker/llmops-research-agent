@@ -2,7 +2,7 @@
 
 這份文件回答四件事：
 
-1. AgentCore 上要有哪些 agent，怎麼每天更新資料、把新資訊和仍然有效的舊資訊合併，再用日期當版本發布（保留最近 7 天）；
+1. AgentCore 上要有哪些 agent，怎麼每天更新資料、把新資訊和仍然有效的舊資訊合併，再用日期當版本發布（版本清單保留最近 30 天，release 本身永不刪除）；
 2. 每個 agent 要不要有自己的 skill（要），skill 放哪裡、怎麼載入；
 3. 程式改了哪些地方；
 4. 怎麼用 GitHub Actions 每天觸發。
@@ -17,7 +17,7 @@
 | --- | --- | --- |
 | 研究 | 五個 EventBridge 排程（AWS 09:00 … digest 10:00），每個排程把一長段 instruction 寫在 schedule 的 JSON 裡 | 8 個 **role**，每個 role 的研究方法寫成 **skill**（`app/llmops_research/skills/`）；一個 Step Functions「每日執行」依序跑完 8 個 role；role 之間用**交接紀錄**（handoff）傳遞線索與沒做完的工作（第 4.1 節） |
 | 觸發 | EventBridge Scheduler | **GitHub Actions**（OIDC，不存任何 AWS key）啟動每日執行；AWS 的排程留作備援（預設關閉） |
-| 版本 | 網站只有「現在上線的那一版」；Radar 已經合併，但下拉選單只有一個日期 | release pointer 記錄 **每天結束時上線的 release**（`versions`，保留 7 天）；網站每一頁都有日期下拉選單，每個日期都是那天的**完整資料**（仍然有效的舊項目＋當天新增），不是當天的變動 |
+| 版本 | 網站只有「現在上線的那一版」；Radar 已經合併，但下拉選單只有一個日期 | release pointer 記錄 **每天結束時上線的 release**（`versions`，保留 30 天）；網站每一頁都有日期下拉選單，每個日期都是那天的**完整資料**（仍然有效的舊項目＋當天新增），不是當天的變動 |
 | 開源模型 | agent 不能改 `data/open-models.json`（網站用 repo 的那份） | 新增 `open-model-scout` role，可以提案修改；這個檔案的每一個修改都**一律等人核准** |
 
 `測試結果` 與 `發布流程` 兩頁不變，也不分版本（它們是團隊自己的紀錄）。
@@ -34,9 +34,9 @@ flowchart LR
     O["每日執行 state machine<br/>(daily-orchestrator.yaml)"]
     P["portal 更新 pipeline<br/>(pipeline.yaml)<br/>研究 → 驗證 → 發布 → 通知"]
     A["AgentCore Runtime<br/>llmops_research<br/>role + skills"]
-    S3[("S3 data plane<br/>releases/&lt;id&gt;/ 不可變<br/>manifest.json: 上線版本 + versions[7]")]
+    S3[("S3 data plane<br/>releases/&lt;id&gt;/ 不可變<br/>manifest.json: 上線版本 + versions[30]")]
     T["amplify-trigger<br/>(每次 pipeline 成功)"]
-    AM["Amplify build<br/>抓 7 天的版本<br/>每一天建 Radar"]
+    AM["Amplify build<br/>抓 30 天的版本<br/>每一天建 Radar"]
     U["ui-verify<br/>Daily update live"]
     SNS["SNS e-mail"]
   end
@@ -62,7 +62,7 @@ flowchart LR
 | `vendor-api-researcher` | Anthropic / OpenAI / Gemini API 直連：deprecations、模型規格、changelog | lifecycle（*-api）、catalog 的模型本身欄位、watchlist | 8 / 14 / 60 | 否 |
 | `litellm-researcher` | LiteLLM：新版本、advisory、avoid list | litellm.json、catalog 的 `litellm` 區塊 | 8 / 14 / 60 | 否 |
 | `open-model-scout` | 開放權重模型：熱度、訊號、三雲託管、權重與授權 | open-models.json（**一律等人核准**） | 10 / 18 / 80 | 否 |
-| `portal-reviewer` | Portal 品質檢查（在研究 role 之後、radar-editor 之前）：先跑 `portal_health()`（catalog／deep dive／watchlist／digest／lifecycle 交叉比對），到官方頁面確認缺口——每個 vendor 目前的 GA 頂尖模型都要在 catalog、有 deep dive；能用引文證明的就補，其餘寫成 `portal-qa` 檢查結果（PASS／FAIL／TODO）與給負責 role 的 leads | catalog（只在證據完整時新增）、既有的 deep dive；缺的 deep dive 檔案 proposal 建不了，寫成 FAIL 交給人；其他 role 的紀錄不改 | 8 / 14 / 70 | 否 |
+| `portal-reviewer` | Portal 品質檢查（在研究 role 之後、radar-editor 之前）：先跑 `portal_health()`（catalog／deep dive／watchlist／digest／lifecycle 交叉比對），到官方頁面確認缺口——每個 vendor 目前的 GA 頂尖模型都要在 catalog、有 deep dive；能用引文證明的就補，其餘寫成 `portal-qa` 檢查結果（PASS／FAIL／TODO）與給負責 role 的 leads | catalog（只在證據完整時新增）、deep dive（既有的，以及替 catalog 裡還沒有 deep dive 的模型新建一份——新的 deep dive 一律等人核准）；其他 role 的紀錄不改 | 8 / 14 / 70 | 否 |
 | `radar-editor` | 最後執行：整理當天發布了什麼，寫當天的 digest，重述仍然有效的行動項目，提出 curation 建議 | digest（必要時少量資料修正） | 8 / 14 / 70 | **是** |
 
 **為什麼是同一個 runtime、8 個 role，而不是 8 個 runtime？**
@@ -123,11 +123,11 @@ flowchart LR
 1. **研究資料本身是累積的**。catalog、lifecycle、litellm、open-models 是同一份檔案持續修改：agent 的 op 改一筆紀錄或新增一筆，其他紀錄原封不動。一個 release 永遠是完整的資料。
 2. **Release Radar 是所有 digest 的合併**（portal repo `tools/build_radar.py`）：同樣（或幾乎同樣）的文字是同一個項目；行動項目在到期日之前、或 30 天內有人重述時保留；`radar/curation.json` 可以合併、關閉、改寫。radar-editor 的 skill 要求它**照抄**仍然有效的項目文字，合併才會把它們算成同一項。
 3. **每日版本**（這次新增）：
-   - pipeline 每次改變上線的 release（發布、核准、rollback），`manifest.json` 的 `versions` 就記下「這一天（台北時間）結束時上線的是哪個 release」，一天一筆，保留最近 **7** 筆（`releases.dated_versions`）。舊的 pointer 沒有 `versions` 時，第一次發布會從發布紀錄補上過去幾天。
-   - Amplify build（portal repo `tools/fetch_release.mjs`）取今天往前 7 個日曆天：今天 = 上線版本；之前每一天 = 那天或之前最近的一筆（沒有發布的日子沿用前一天的資料）。每一天的 `data/` 放到 `versions/<日期>/`。
+   - pipeline 每次改變上線的 release（發布、核准、rollback），`manifest.json` 的 `versions` 就記下「這一天（台北時間）結束時上線的是哪個 release」，一天一筆，保留最近 **30** 天（有上線變動的 30 個日子；`releases.VERSIONS_LIMIT`、`releases.dated_versions`）。舊的 pointer 沒有 `versions` 時，第一次發布會從發布紀錄補上它涵蓋的日子。`portalctl status` 列出最新的 7 天，其餘只算天數。
+   - Amplify build（portal repo `tools/fetch_release.mjs`）取今天往前 30 個日曆天：今天 = 上線版本；之前每一天 = 那天或之前最近的一筆（沒有發布的日子沿用前一天的資料；`versions` 記的是 30 個有上線變動的日子，所以一定涵蓋這 30 天）。每一天的 `data/` 放到 `versions/<日期>/`。
    - `tools/build_versions.py` 替每個日期建當天的 Radar：只合併那一天以前的 digest（Radar 的日期＝其中最新一份 digest），用同一份 curation——curation 的每一筆都有日期，之後才關閉的項目不會回頭影響過去的版本。
    - 網站：每個研究頁面上方有「資料版本」下拉選單（`?v=2026-10-10` 寫在網址裡，可以分享）；看舊版本時整頁的資料、剩餘天數都以那一天為準，並顯示「回到最新版本」。
-   - **release 本身不刪**：rollback 需要它們，而且都是很小的 JSON。只保留 7 天的是「版本清單」與網站上的選項。要控制 S3 成本，可以之後加 lifecycle rule（例如 90 天前的 `releases/` 轉 Glacier），但不要短於 rollback 需要的範圍。
+   - **release 本身永遠不刪**：每一個 release 都是它當時內容的不可變紀錄（`release.json` 記著來源、差異與引文），rollback 也靠它們，而且都是很小的 JSON。只保留 30 天的是 pointer 裡的「版本清單」與網站上的選項——清單只是名字，從清單上掉下去的 release 照樣在 `releases/` 底下，照樣可以 `portalctl show`／rollback（不在發布紀錄裡的要加 `--unlisted`）。要控制 S3 成本，可以之後加 lifecycle rule（例如 90 天前的 `releases/` 轉 Glacier），但不要短於 rollback 需要的範圍。
 
 **curation 的人機分工**：radar-editor 把「建議關閉／合併／改寫」寫進提案的 `checked`（topic `radar-curation`），通知信會列出「Radar 整理建議」；人確認後改 portal repo 的 `radar/curation.json`。讓 agent 直接改 curation 是下一步（第 9 節）。
 
@@ -222,7 +222,7 @@ portalctl push --portal ../llmops-portal --only schema,data/open-models.json --n
 
 ## 9. 限制與下一步
 
-- `portal-reviewer` 找得到缺 deep dive 的模型，但 proposal 只能修改已經存在的檔案，建不了新的 `data/models/<id>.json`：它寫成 `portal-qa` 的 FAIL 行與 `unverified`（需要哪些官方頁面），由人在 portal repo 建立。要讓 agent 提案新增 deep dive，資料契約、validator 與 publisher 要先能處理「新檔案」。
+- 缺 deep dive 的模型（`lookup_portal("summary")` 的 `modelsWithoutDeepDive`）現在可以由提案建立 `data/models/<id>.json`（`add`、路徑為空；只限 catalog 裡的模型、檔案還不存在、`modelId` 等於檔名），每一個值照新增內容的規則檢查，而且**一律等人核准**（發布端從實際的差異判斷）：deep dive 大多是文字，沒有程式能對照引文判斷。
 - 交接紀錄只保留在結果儲存位置（`research/handoff/`），沒有自動清除；需要時可以加 S3 lifecycle rule（例如 30 天後刪除），agent 只讀今天與昨天的。
 - `data/open-models.json` 的修改**全部等人核准**：熱度是多個訊號的判斷，沒有單一引文可以對照。等有可靠的逐項檢查後再放寬（AGENTS.md 的規則：要放寬，先有能對照引文的檢查）。
 - curation 仍由人改 `radar/curation.json`。讓 agent 直接提案修改，需要 agent 看得到 Radar 的項目 id（目前只在 build 時產生）——下一步可以把 `radar.json` 也放進 release。

@@ -141,6 +141,20 @@ def test_bootstrap_publishes_the_checkout_and_remembers_where_it_came_from(env, 
     assert env.run("history") == 0 and current.release_id in env.out
 
 
+def test_status_names_the_newest_daily_versions_and_counts_the_month(env):
+    """The pointer lists a month of daily versions (releases.VERSIONS_LIMIT): status names the newest week of them and
+    says how far back the rest reach, instead of one line of thirty release ids."""
+    env.bootstrap()
+    manifest, etag = R.read_pointer(env.store)
+    days = [dt.date(2026, 10, 30) - dt.timedelta(days=n) for n in range(R.VERSIONS_LIMIT)]
+    manifest["versions"] = [{"date": d.isoformat(), "releaseId": manifest["releaseId"], "publishedAt": f"{d.isoformat()}T01:00:00Z"} for d in days]
+    R.switch_pointer(env.store, manifest, etag)
+    assert env.run("status") == 0
+    line = next(x for x in env.out.splitlines() if x.startswith("每日版本"))
+    assert line.count(manifest["releaseId"]) == CTL.STATUS_VERSIONS and "2026-10-30（" in line and "2026-10-24（" in line and "2026-10-23（" not in line
+    assert line.endswith("…共 30 天（最早 2026-10-01；保留最近 30 天，release 本身都保留）"), line
+
+
 def test_bootstrap_warns_about_a_leftover_flat_copy(env):
     env.store.put("data/lifecycle.json", b"{}")  # what scripts/sync_portal_data.py used to upload
     env.store.put("schema/llmops.schema.json", b"{}")

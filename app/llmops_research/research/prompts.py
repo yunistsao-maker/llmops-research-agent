@@ -44,6 +44,8 @@ A path never goes THROUGH a list position ("/events/3/date" is refused: the list
 is published). Only the last segment may be a position, e.g. "/events/<id>/notes/1" - and an element without an id is
 changed as a whole (replace "/events/<id>/conflicts/0" with the complete new entry).
 Adding a record = op "add" with the full object (every required field of its schema type, see describe_schema).
+New deep dive (lookup_portal("summary").modelsWithoutDeepDive): op "add", path "", file "data/models/<model id>.json",
+value = the complete DeepDive, modelId = that id (asOf is stamped). Every value is checked as new; it waits for a person.
 One operation = one change: replace the field that differs, not the record around it, and keep the order lists have.
 
 What the validator enforces (errors come back to you; fix exactly those and resubmit):

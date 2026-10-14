@@ -69,6 +69,7 @@ digest／lifecycle），是 `portal-reviewer` 的起點。詳見 [daily-agents-d
 | 引用來源 | 引用的來源必須是這個 operation 的引文所在的頁面；一筆資料原有的引用來源不能被清空，也不能重複引用同一個來源 |
 | 清單 | 新增的紀錄不能用清單裡已經有的 key（`id`、`service`、`feature`、`alias`、`scope`、`endpoint`，release 的 `version`）：頁面會改顯示新的那一筆，等於改寫了舊的。把新紀錄插在既有紀錄的前面會收到警告，發布時等人（很多頁面顯示的是第一筆）；單純調換順序退回。引用來源（`sources`）只能從尾端增加：調換順序、改或刪除引用的備註都等人 |
 | digest | 至少要有一則項目，而且每一則都要引用來源。項目裡的日期、金額與「幾月幾日」要出自它引用、而且這次**真的讀過**的頁面的引文——並且那則引文講的是**這句話說的那個模型**（digest 自己的句子用同一套對象規則來讀：「X 將於 D 下架（Y 同日）」說的是 X，旁邊提到 Y 不會讓 Y 的日期變成 X 的）——或者是 portal 上那個模型的紀錄原本就有的值（改前或改後）。headline 與 `actionItems` 只能重複各項目已經成立的日期與金額（同一個模型），或 portal 上那個模型的紀錄；`actionItems[].due` 是團隊自己訂的期限，不檢查；`relatedModelIds` 必須是 catalog 裡的模型 id。`unverified` 裡的日期要在這次讀過的頁面、顯示過的搜尋結果、或它提到的模型的紀錄裡。程式判斷不了的情況不退回，而是讓整份提案等人，各有旗標：引用的頁面這次一頁都沒讀（`digestNotReread`）、整份 digest 沒有項目或 `unverified` 的日期查無出處（`digestUnsourced`）、引文沒有點名句子裡的模型或句子提到不只一個模型（`uncertainSubject`）、短寫的日期沒有出處（`uncheckedValue`）。每一則項目與行動項目可以帶三個**標記**：`topic`（它講的主題，同一個主題每天寫成同一個，portal 的 Radar 把同一個主題的項目合成一張卡：`<area>:<subject>[:<aspect>]`，小寫，subject 用 catalog 的模型 id、litellm、CVE 編號…，例如 `pricing:claude-sonnet-5-5`；格式不對退回）、`check: true`（「查過、沒有變化」的涵蓋紀錄，不是新聞；一樣要引用來源）、`merges`（這一則更新、併入的**先前**項目：期間結束日比它早的 digest 裡**同一區**項目的標題，行動項目則是先前行動項目的 `action` 原文，最多 10 個；以 Radar 的正規化（全形半形、大小寫、標點與空白、「【… 補充】」標記）比對後必須完全相同，否則退回，發布端重新套用時也會再檢查一次）。標記不是句子：`merges` 裡的日期不再對照引文（它們是 portal 上已經有、上線時檢查過的標題），`topic` 提到的模型也不算這一則項目提到的模型 |
+| 新的 deep dive | catalog 裡還沒有 deep dive 的模型（`lookup_portal("summary")` 的 `modelsWithoutDeepDive`）可以由一個 operation 建立 `data/models/<模型 id>.json`：`add`、路徑為空、值是完整的 DeepDive，`modelId` 等於檔名裡的 id。模型要已經在 catalog 裡，或由同一份提案**前面**的 operation 新增；檔案已經存在、id 不在 catalog、另一個檔名的 deep dive 已經是這個模型的、`modelId` 不符、檔名不合規則、其他任何檔案都退回，同一份提案後面的 operation 也不能再改這個新檔案（內容全部寫在建立它的那一個 operation 裡）。新檔案的每一個值都算新增：文字裡的日期與金額要在引文裡，各位置的層級下限照常（onboarding、API 相容性、可用性矩陣、breaking changes、與前代比較、安全與合規要官方頁面，其餘至少獨立來源），引用的來源要是這個 operation 的引文所在的頁面，schema 與跨檔檢查照常；`asOf` 由程式蓋成當天。驗證器接受並警告「新的 deep dive 一律等人核准」，發布端看到實際的差異裡多了一個 `data/models/` 的檔案就等人（不是旗標，是差異本身） |
 | Schema + 跨檔 | 套用後的資料必須仍通過 portal 的 JSON Schema（draft-07、`additionalProperties:false`）與跨檔檢查；只比對「新增」的問題。連結欄位必須是單純的 `https://` 網址；日期欄位必須是單純的 `YYYY-MM-DD`（結尾多一個換行也不行）；數值不能是 NaN／Infinity 或超過瀏覽器能精確表示的整數 |
 | 一個 operation 一件事 | 單一個 `replace` 改寫超過 12 個原有的值會被退回，要求拆成一個欄位一個 operation。`replace`／`remove` 的對象必須是現在就存在的資料，不能接在同一份提案前面的 operation 後面。**路徑中途不能用數字位置**（`/events/2/date`）：要用 id（`/events/<id>/date`），位置只有在最後一段才可以用（`/notes/0`、`/notes/-`） |
 | 提案的大小 | 一份提案最多 80 個 operation、600 KB、30,000 個值（文字、數字、陣列、物件全部算在內；整個 portal 的資料大約兩萬個）。超過的不逐項檢查，直接退回並請模型只改研究涉及的紀錄 |
@@ -82,7 +83,7 @@ digest／lifecycle），是 `portal-reviewer` 的起點。詳見 [daily-agents-d
 | 預算 | 搜尋、抓取、tool call、model turn、token、時間都有上限；請求只能調低，不能調高 |
 
 **通過驗證 ≠ 自動上線。** 驗證器確認的是「寫進去的日期、數字、版本有出處」。提案裡其他種類的變更——刪除、清空、改寫原有的文字、
-改狀態或分類、改標籤、換掉引用來源、改清單順序、動到 `derived` 的內容或 `data/requirements.json`、超過 60 項變更——程式無法對照引文判斷，
+改狀態或分類、改標籤、換掉引用來源、改清單順序、動到 `derived` 的內容或 `data/requirements.json`、新增 deep dive、超過 60 項變更——程式無法對照引文判斷，
 驗證器會放行並**警告模型「這一項會等人核准」**（模型可以選擇不提，或把最重要的變更先單獨送出），發布端則依實際的差異讓整份提案等人。
 完整的清單在 [architecture](architecture.md) 第 4 節。
 

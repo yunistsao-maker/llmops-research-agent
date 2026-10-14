@@ -12,6 +12,7 @@ import json
 import pytest
 from conftest import COMPAT, INVENTORY, PERF, T0, T1, T2, accepted_run, snapshot_tree, tool_file
 
+from portal_pipeline import notify as N
 from portal_pipeline import publish as P
 from portal_pipeline import releases as R
 from portal_pipeline.storage import Conflict
@@ -597,7 +598,7 @@ def test_what_the_live_data_holds_is_not_discarded_because_the_record_of_its_rel
     assert P.rollback(plane.data, actor="bob", reason="先撤回", now=T2).status == "rolled_back"
     assert P.publish_proposal(plane.data, record, policy=review, control=plane.control, now=T2).status == "pending"
     monkeypatch.setattr(R, "HISTORY_LIMIT", 1)  # (a pointer keeps its last 60 releases: here, the last one)
-    monkeypatch.setattr(R, "VERSIONS_LIMIT", 1)  # (and the release of each of its last 7 days: here, today's)
+    monkeypatch.setattr(R, "VERSIONS_LIMIT", 1)  # (and the release of each of its last 30 days: here, today's)
     pushed = P.publish_tree(plane.data, corrected, base_release=base.release_id, actor="carol", note="同一個修正，手動發布",
                             now=T2 + dt.timedelta(hours=1))
     assert pushed.status == "published", pushed.reasons
@@ -1273,6 +1274,104 @@ def test_create_is_not_an_operation_a_proposal_can_use(plane):
         outcome = P.publish_proposal(plane.data, run_with({"file": name, "op": "create", "path": "", "value": page, "evidence": ["e1"], "rationale": "x"}),
                                      control=plane.control, now=T1)
         assert outcome.status == "rejected" and any("is not available" in r for r in outcome.reasons), (name, outcome.reasons)
+    assert live(plane).release_id == base.release_id and not any(k.startswith("data/models/") for k in live(plane).files)
+
+
+# ---------------------------------------------------------------------------------------------- a new deep dive
+def deep_dive(model_id: str, **changes) -> dict:
+    """A complete DeepDive for a catalog model (every required field)."""
+    doc = {"schema": "deep-dive/v1", "modelId": model_id, "title": "Claude Sonnet 5.5 技術深度解析", "locale": "zh-TW", "asOf": "2031-01-01",
+           "tldr": "平衡型模型，適合程式與 agent 工作。", "whatsNew": [], "breakingChanges": [], "availabilityMatrix": [], "apiCompatibility": [],
+           "strengths": ["程式與 agent 工作。"], "weaknesses": [], "bestFor": [], "avoidFor": [], "safetyAndCompliance": [], "enterpriseNotes": [],
+           "testPlanFocus": [], "openQuestions": [], "sources": [{"id": "anthropic-sonnet55-overview"}],
+           "onboarding": {"audience": "應用團隊", "prerequisites": [], "steps": [], "aliases": [], "parameterGuidance": [], "codeSamples": [],
+                          "dataClassification": "內部", "support": "平台團隊"}}
+    doc.update(changes)
+    return doc
+
+
+def creating(model_id: str, **changes) -> dict:
+    """The fixture run, creating the deep dive of ``model_id`` (an `add` at the path "", as the agent saves it)."""
+    record = run_with(op("add", f"data/models/{model_id}.json", "", deep_dive(model_id, **changes)))
+    record["proposal"]["id"] = "prop-20261002T030000Z-deepdive"
+    return record
+
+
+def test_a_new_deep_dive_always_waits_for_a_person_and_goes_into_the_release(plane):
+    """A catalog model without a deep dive gets one from a proposal - never without a person, whatever the policy lets
+    through; once approved, the release holds the file and the pointer's index lists it for the UI."""
+    base = plane.bootstrap()
+    m = model()
+    dive = f"data/models/{m['id']}.json"
+    assert dive not in live(plane).files and live(plane).manifest["models"] == []
+    record = creating(m["id"])
+    for policy in (P.Policy(), P.Policy(max_ops=500, max_op_changes=500, allow_remove=True)):
+        outcome = P.publish_proposal(plane.data, record, policy=policy, control=plane.control, now=T1)
+        assert outcome.status == "pending", outcome.to_state()
+        # the one reason: read from the real difference (a file under data/models/ that is not live and would be)
+        assert outcome.reasons == [f"提案會新增模型的 deep dive（{dive}）：內容大多是文字，沒有引文可以逐字對照，新的 deep dive 一律等人核准"], outcome.reasons
+        assert outcome.changes["added"] == [dive] and live(plane).release_id == base.release_id
+        state = outcome.to_state()
+        assert state["review"]["changes"][0]["file"] == dive and state["review"]["changes"][0]["path"] == "" and state["review"]["changes"][0]["kind"] == "added"
+        # the message names it as the file it is, not as a value added somewhere
+        assert f"  + {dive}（新檔案）\n      整個檔案 " in N.review_block(state["review"])
+    # the hold is the difference's, not the spelling's: a proposal that calls it something else is held as well (holds())
+    review = P.build_review(PortalData.from_mapping({k: json.loads(v) for k, v in snapshot_tree().items() if k.endswith(".json")}),
+                            PortalData.from_mapping({**{k: json.loads(v) for k, v in snapshot_tree().items() if k.endswith(".json")},
+                                                     "data/models/anything.json": deep_dive(m["id"])}), {"ops": []}, base.release_id)
+    assert any("data/models/anything.json" in r and "一律等人核准" in r for r in P.holds({"ops": []}, P.Policy(), review))
+    # what the person approves is what goes live: the file in the new release, stamped with the proposal's day
+    approved = P.approve(plane.data, plane.control, "prop-20261002T030000Z-deepdive", actor="eunice", now=T1)
+    assert approved.status == "published", approved.reasons
+    current = live(plane)
+    published = json.loads(current.files[dive])
+    assert published == dict(deep_dive(m["id"]), asOf="2026-10-02") and current.meta["changes"]["added"] == [dive]
+    assert current.meta["files"][dive]["sha256"] == R.sha256_hex(current.files[dive])
+    assert current.manifest["models"] == [m["id"]]  # the index the UI reads its deep dives from
+    assert set(current.files) - set(R.read_release(plane.data, base.release_id)[1]) == {dive}
+    # the notification names it as the file it creates
+    assert f"建立檔案 {dive}" in N.operations_block(approved.operations)
+    # and the same proposal again is the one that is live, not a clash with its own file
+    assert P.publish_proposal(plane.data, record, control=plane.control, now=T2).status == "already_published"
+
+
+def test_a_new_deep_dive_is_refused_when_the_file_appeared_meanwhile(plane):
+    """Research that wanted to create a deep dive which a person has published since: the replay finds the file there
+    and refuses - it never overwrites what is live (and a create is not a replace)."""
+    base = plane.bootstrap()
+    m = model()
+    dive = f"data/models/{m['id']}.json"
+    record = creating(m["id"])
+    assert P.publish_proposal(plane.data, record, control=plane.control, now=T1).status == "pending"
+    theirs = {**snapshot_tree(), dive: (json.dumps(deep_dive(m["id"], tldr="團隊自己寫的版本。", asOf="2026-10-02"), ensure_ascii=False, indent=2) + "\n").encode()}
+    manual = P.publish_tree(plane.data, theirs, base_release=base.release_id, actor="eunice", now=T1)
+    assert manual.status == "published", manual.reasons
+    outcome = P.approve(plane.data, plane.control, "prop-20261002T030000Z-deepdive", actor="eunice", now=T2)
+    assert outcome.status == "rejected" and any(f"{dive} already exists" in r for r in outcome.reasons), outcome.reasons
+    assert live(plane).release_id == manual.release_id and json.loads(live(plane).files[dive])["tldr"] == "團隊自己寫的版本。"
+    # a fresh run of the same research is refused the same way, before anybody is asked
+    again = creating(m["id"])
+    again["proposal"]["id"] = "prop-20261002T030000Z-deepdive2"
+    assert P.publish_proposal(plane.data, again, control=plane.control, now=T2).status == "rejected"
+
+
+@pytest.mark.parametrize("name, value, said", [
+    ("data/models/gpt-9-ultra.json", deep_dive("gpt-9-ultra"), "'gpt-9-ultra' is not the id of a model in data/catalog.json"),
+    ("data/models/claude-sonnet-5-5.json", deep_dive("claude-sonnet-5"), "modelId must be 'claude-sonnet-5-5'"),
+    ("data/models/.hidden.json", deep_dive(".hidden"), "an operation creates no file but a model's deep dive"),
+    ("data/models/-x.json", deep_dive("-x"), "an operation creates no file but a model's deep dive"),
+    ("data/../manifest.json", deep_dive("claude-sonnet-5-5"), "an operation creates no file but a model's deep dive"),
+    ("data/lifecycle.json", deep_dive("claude-sonnet-5-5"), "refusing to replace a whole file"),
+    ("data/requirements.json", deep_dive("claude-sonnet-5-5"), "an operation creates no file but a model's deep dive"),
+    ("data/models/claude-sonnet-5-5.json", dict(deep_dive("claude-sonnet-5-5"), tldr=None), "portal validation"),
+    ("data/models/claude-sonnet-5-5.json", deep_dive("claude-sonnet-5-5", sources=[{"id": "no-such-source"}]), "unknown source id 'no-such-source'"),
+])
+def test_a_create_that_is_not_a_new_deep_dive_of_a_catalog_model_is_refused_on_replay(plane, name, value, said):
+    """Whatever the run record says about itself: the replay creates nothing else, and checks the new file like the rest."""
+    base = plane.bootstrap()
+    outcome = P.publish_proposal(plane.data, run_with({"file": name, "op": "add", "path": "", "value": value, "evidence": ["e1"], "rationale": "x"}),
+                                 control=plane.control, now=T1)
+    assert outcome.status == "rejected" and any(said in r for r in outcome.reasons), (name, outcome.reasons)
     assert live(plane).release_id == base.release_id and not any(k.startswith("data/models/") for k in live(plane).files)
 
 

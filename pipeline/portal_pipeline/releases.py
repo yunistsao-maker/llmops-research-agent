@@ -1,16 +1,17 @@
 """The layout the portal UI reads, and the only way it changes.
 
     manifest.json                     the pointer: which release is live (+ the index the UI needs + recent history
-                                      + versions: the release live at the end of each of the last 7 changed days)
+                                      + versions: the release live at the end of each of the last 30 changed days)
     releases/<id>/release.json        what the release contains, where it came from, what changed
     releases/<id>/schema/...          llmops.schema.json
     releases/<id>/data/...            catalog.json, lifecycle.json, digests/*.json, models/*.json, internal/*.json ...
     releases/<id>/runs/...            compat / perf test results
     releases/<id>/config/...          litellm.example.yaml
 
-A release is immutable (it can be cached forever); publishing writes a complete new release and then replaces the
-pointer with one conditional write.  Readers therefore see either the old data or the new data, never a mixture, and
-a rollback is a pointer change.
+A release is immutable (it can be cached forever) and is never deleted: each one stays the record of what it held.
+Publishing writes a complete new release and then replaces the pointer with one conditional write.  Readers therefore
+see either the old data or the new data, never a mixture, and a rollback is a pointer change.  The pointer's history and
+daily versions are short lists of names of releases; dropping a name from them deletes nothing.
 """
 
 from __future__ import annotations
@@ -52,8 +53,9 @@ MAX_FILES = 2000
 HISTORY_LIMIT = 60
 #: Daily versions: the pointer remembers, for each of the most recent VERSIONS_LIMIT calendar days on which the live
 #: release changed, which release was live at the end of that day.  The portal's build shows one version per day (the
-#: date is the version's name) and takes a day without an entry from the latest entry before it.
-VERSIONS_LIMIT = 7
+#: date is the version's name) and takes a day without an entry from the latest entry before it.  A month of days: the
+#: releases themselves are kept for good, this is only how far back the list of names reaches (some 3 KB of pointer).
+VERSIONS_LIMIT = 30
 #: The team's calendar (Taiwan has no daylight saving time, so a fixed offset is exact and needs no tz database).
 VERSION_TZ = dt.timezone(dt.timedelta(hours=8), "Asia/Taipei")
 #: A release is hundreds of small objects; one at a time that is minutes of round trips, which a Lambda does not have.
@@ -493,7 +495,7 @@ def dated_versions(previous: dict | None, release_id: str, published_at: str) ->
     (the release live at the end of it), at most VERSIONS_LIMIT days.
 
     A pointer written before versions existed has none; its history (newest first) gives the same answer for the days
-    it reaches, so the first publish after an upgrade already carries the past week.
+    it reaches, so the first publish after an upgrade already carries the days its history covers.
     """
     prev = previous or {}
     if isinstance(prev.get("versions"), list):

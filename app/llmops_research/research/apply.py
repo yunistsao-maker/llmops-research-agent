@@ -23,13 +23,17 @@ from typing import Any
 
 from .portal.checks import is_date, is_datetime, new_problems, validate_docs
 from .portal.data import PortalData
-from .portal.diff import Change, diff_value, same
-from .portal.patch import Op, PatchError, apply_op, file_is_editable, get_at, is_index, positions_on_the_way, split_path
+from .portal.diff import Change, diff_docs, diff_value, same
+from .portal.patch import (Op, PatchError, apply_op, creates_file, file_is_editable, get_at, is_index, positions_on_the_way,
+                           split_path)
 from .portal.protected import protected_changes
 
 PROPOSAL_SCHEMA = "llmops-research-proposal/v1"
-#: top-level fields of a data file that only this module writes (generatedAt on every change, asOf through `asOfFiles`)
+#: top-level fields of a data file that only this module writes (generatedAt on every change, asOf through `asOfFiles`
+#: - and in a new deep dive: ``created_file``)
 FILE_STAMPS = ("asOf", "generatedAt", "schema")
+#: the `schema` a deep dive is written in (the portal schema's const for DeepDive.schema)
+DEEP_DIVE_SCHEMA = "deep-dive/v1"
 _DIGEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")  # becomes a file name: data/digests/<id>.json
 #: The values (texts, numbers, lists, objects) one proposal may hold, everything in it counted.  All of a portal's data
 #: is some twenty thousand values and a proposal changes a few records of it; a research run's largest proposal holds
@@ -75,13 +79,36 @@ def _pointer(segs: list[str]) -> str:
     return "".join("/" + seg.replace("~", "~0").replace("/", "~1") for seg in segs)
 
 
+def created_file(value: Any, today_iso: str) -> Any:
+    """A new deep dive as staging writes it.  Its `asOf` - "the content is current as of" - is the day of the research
+    that wrote it: a stamp, like every `asOf`, and not the proposal's to say (a page published with a later `asOf` would
+    claim a verification nobody made).  Its `schema` is the one deep dives are written in, unless the value names one
+    (which the portal schema then checks)."""
+    if not isinstance(value, dict):
+        return copy.deepcopy(value)
+    doc = {"schema": DEEP_DIVE_SCHEMA, **copy.deepcopy(value)}
+    doc["asOf"] = today_iso
+    return doc
+
+
 def out_of_step(today: dict[str, Any], now: dict[str, Any], op: Op) -> str | None:
     """Why ``op`` is not about the portal data as it is today (None when it is).
 
     Operations are applied one after another, but each one is checked, shown to a reviewer and compared with the live
     data against *today's* value (``before``).  That is only true while no operation works on something an earlier
     operation of the same proposal created, moved or changed: ``now`` is the data as those earlier operations left it.
+
+    The creation of a deep dive (``add`` at the path "") is the one operation that may rest on an earlier one: it has
+    no ``before`` - nothing of today's that it is compared with or shown next to - and all it reads of the earlier
+    operations is whether the catalog has the model by then (``patch.create_problem``), so it may follow the operation
+    that adds the model.  That operation is checked against today's catalog like any other, a replay applies both in
+    the same order (and refuses both when either no longer applies), and a later operation that takes the model away
+    again leaves a deep dive of no catalog model, which the cross-file check refuses.  Nothing may follow it into the
+    new file: its whole content is the one operation that creates it (the first check here).
     """
+    if op.file not in today and op.file in now:
+        return ("the file does not exist in the portal data as it is today: an earlier operation of this proposal creates it. Put the "
+                "complete content into that operation instead")
     if op.file not in today or op.file not in now or not file_is_editable(op.file):
         return None  # apply_op says what is wrong with the file
     try:
@@ -318,12 +345,17 @@ def stage_proposal(
             elif problem:
                 errors.append(f"{label}: {problem}")
             else:
+                if creates_file(op):
+                    op = dataclasses.replace(op, value=created_file(op.value, today_iso))
+                existed = op.file in staged.docs
                 before = copy.deepcopy(staged.docs.get(op.file)) if effects is not None else None
                 applied.append(apply_op(staged.docs, op))
                 touched.add(op.file)
                 if effects is not None:
-                    effect = [dataclasses.replace(c, after=copy.deepcopy(c.after))
-                              for c in diff_value(before, staged.docs[op.file], file=op.file)]
+                    # a file this operation created is added as a whole - every value in it is new (as in the
+                    # publisher's comparison of the live data with the result)
+                    found = diff_value(before, staged.docs[op.file], file=op.file) if existed else diff_docs({}, {op.file: staged.docs[op.file]})
+                    effect = [dataclasses.replace(c, after=copy.deepcopy(c.after)) for c in found]
         except PatchError as e:
             errors.append(f"{label}: {e}")
         if effects is not None:
@@ -475,17 +507,22 @@ def already_applied(portal: PortalData, proposal: dict) -> bool:
     if not (raw_ops or new_sources or digest):
         return False
     try:
-        return _already_applied(portal, raw_ops, new_sources, digest)
+        return _already_applied(portal, raw_ops, new_sources, digest, proposal.get("today") or proposal["createdAt"][:10])
     except Exception:  # damaged data or a shape nobody thought of: "not applied" sends it through the full validation
         return False
 
 
-def _already_applied(portal: PortalData, raw_ops: list, new_sources: list, digest: dict | None) -> bool:
+def _already_applied(portal: PortalData, raw_ops: list, new_sources: list, digest: dict | None, today_iso: str) -> bool:
     try:
         for raw in raw_ops:
             op = Op.from_dict({k: v for k, v in raw.items() if k != "before"})
             if op.file not in portal.docs or op.op not in ("add", "replace", "remove"):
                 return False
+            if creates_file(op):
+                # the file the proposal creates, as staging would write it (another file of that name is not this one)
+                if not _same(portal.docs[op.file], created_file(op.value, today_iso)):
+                    return False
+                continue
             if op.op == "remove":
                 try:
                     get_at(portal.docs, op.file, op.path)

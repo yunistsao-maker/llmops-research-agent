@@ -536,6 +536,11 @@ def _diff_holds(review: Review, policy: Policy) -> list[str]:
     for rel in REVIEWED_FILES:
         if any(c.file == rel for c in review.changes + review.stamps):
             out.append(f"提案會修改 {rel}（開源模型的熱度分級、託管狀態與企業注意事項目前一律由人確認）")
+    # A new deep dive: every value in it is new, and most of it is prose that no quote can be compared with.  Read from
+    # the difference (a file under data/models/ that was not live and would be), however the proposal spelled it.
+    created = L.new_deep_dives(review.changes)
+    if created:
+        out.append("提案會新增模型的 deep dive（" + _listed(created) + "）：內容大多是文字，沒有引文可以逐字對照，新的 deep dive 一律等人核准")
     computed = L.derived(review.changes)
     if computed:
         out.append("提案新增或修改了標示為 derived 的內容（由其他資料推算，沒有引文可以對照），請確認推算成立：" + _listed(computed))

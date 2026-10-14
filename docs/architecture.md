@@ -69,6 +69,7 @@ portal/
 | `source` | 這一版怎麼來的：`agent`（含 `proposalId`、`proposalSha256`、`runId`、`approvedBy`）、`manual`、`bootstrap`、`rollback` |
 | `autoPublish` | 自動發布的暫停旗標（`{"paused": true, "by", "at", "reason"}`）。放在指標裡，所以「現在是不是暫停」和「切換指標」是同一次條件寫入 |
 | `history` | 最近 60 次發布的摘要 |
+| `versions` | 每日版本：每個台北日期結束時上線的是哪個 release，一天一筆，保留最近 30 天（`releases.VERSIONS_LIMIT`）；portal 的 build 用它替每一天建一個版本。這只是一份名單：release 本身**永遠不刪**，每一個都是它當時內容的不可變紀錄，從名單上掉下去的照樣在 `releases/` 底下，照樣可以 `portalctl show` 與 rollback（發布紀錄以外的要加 `--unlisted`，見第 4 節） |
 
 為什麼是「指標 + 不可變的 release」而不是直接覆寫檔案：
 
@@ -142,7 +143,7 @@ execution history 可以直接看到每一步拿到什麼、做了什麼決定�
 
 **`auto` 模式下，不經過人就上線的只有兩種變更：**
 
-1. **新增的內容**：一筆新紀錄、附加在後面的一則備註、多引用一個來源、一份新的 digest。
+1. **新增的內容**：一筆新紀錄、附加在後面的一則備註、多引用一個來源、一份新的 digest。（新的 deep dive 例外：它也是新增的內容，但一律等人，見下表）
 2. **既有紀錄上的日期、數字、版本改了**——這三種值可以逐字和引文比對，而且 agent 的驗證器已經確認過：值出現在一則引文裡、那一則引文講的是這個模型（不是同一頁的另一個模型）、引文所在頁面的來源層級夠高。
    算不算這一類，看的是**變更**而不是新值長什麼樣子：日期換成日期、數字換成數字、版本換成版本才算。一段文字、一個識別字串或一個分類被換成「看起來像日期」的值，是改寫，要等人。
 
@@ -169,6 +170,7 @@ agent 的輸出只是**提案**。發布流程不信任它：用和 agent 相同
 | 某一項變更的「原值」和上線中的資料不符 | 資料在研究之後被改過；套用會蓋掉別人的更新 |
 | operation 建立在同一份提案裡前一個 operation 的結果上：改它剛新增或改過的東西、在清單被動過之後用位置指定 | 「原值」是對照今天的資料記錄的；這樣寫的話，顯示給人看的和實際被取代的就不是同一個東西 |
 | operation 不是 `add`／`replace`／`remove`（沒有 `create`），或它的對象是 `sources.json`、既有的 digest、整個檔案、`asOf`／`generatedAt`／`schema` | 來源只能經由 `newSources` 新增、digest 只能整份新增、時間戳記由流程蓋；agent 的驗證器不會產生這些 operation |
+| 建立檔案（`add`、路徑為空），但不是「catalog 裡的模型、還沒有的 deep dive」：檔名不是 `data/models/<模型 id>.json`（以英數字開頭）、檔案已經存在（包括研究之後才有人發布的）、那個 id 不在 catalog 裡（今天的 catalog，或同一份提案**前面**的 operation 新增的模型）、另一個檔名的 deep dive 已經是這個模型的（它的 `modelId`）、`modelId` 和檔名不符、或同一份提案後面的 operation 又去改這個新檔案 | operation 能建立的檔案只有這一種（`patch.create_problem`）。新檔案的每一個值都是新增的，和其他新增的內容一樣經過 schema、跨檔（來源存在、`modelId` 在 catalog）與保護欄位的檢查；`asOf` 一律由流程蓋成提案當天 |
 | 新的 digest 的 `id` 不等於 `periodEnd`、期間在未來、或同一個 id 的 digest 已經存在 | digest 的檔名就是它的日期 |
 | 新的 digest 的項目用 `merges` 列了一個不是先前 digest（期間結束日比它早）**同一區**項目標題的字串（行動項目：先前行動項目的 `action` 原文；比對前做和 portal Radar 相同的正規化） | `merges` 裡的日期不對照引文，因為它們應該是 portal 上已經有、上線時檢查過的標題；對不上的就是沒有人檢查過的文字，Radar 也找不到要合併的項目 |
 | 套用後出現新的 schema 或跨檔檢查問題（含日期時間的格式、連結欄位不是單純的 `https://` 網址、`data/litellm.json` 裡 Gateway 頁面無法解析的版本） | UI 讀到會出錯，或連結會把人帶到別的地方 |
@@ -200,6 +202,7 @@ agent 的輸出只是**提案**。發布流程不信任它：用和 agent 相同
 | 把某筆資料原有的引用來源全部拿掉 | `AutoAllowRemove` |
 | 修改既有模型的識別欄位（`name`、`vendor`、`family`、`vendorModelId`） | 固定：`platformStatus` 是針對原本那個模型核定的 |
 | 動到 `data/requirements.json`（需求、發布關卡、指標定義），包含只是更新它的 `asOf` | 固定 |
+| 新增模型的 deep dive（`data/models/<id>.json` 原本不在上線的資料裡，套用後會有）。判斷依據是實際的差異（`labels.new_deep_dives`），不是 operation 怎麼寫 | 固定：deep dive 大多是文字（新功能、breaking changes、onboarding、優缺點），日期與金額可以對照引文，其餘沒有程式能判斷 |
 | 新增或修改了標示為 `derived` 的內容（由其他資料推算的值，沒有引文可以對照），包含這種紀錄底下的任何欄位，以及把標籤從 `derived` 改成別的 | 固定 |
 | 把某個檔案標成「今天整份重新確認過」（`asOf`），或把某筆資料標成「今天對照來源確認過」（`lastVerified`），但這次研究沒有把它引用的來源頁面全部讀過——或提案沒有說它讀了哪些、說的數量和實際引用的不符 | 固定 |
 | 把 `lastVerified` 設成提案當天以外的日期 | 固定 |

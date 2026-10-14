@@ -34,6 +34,7 @@ publishing pipeline computes its own gates from the real difference and only eve
 from __future__ import annotations
 
 import copy
+import dataclasses
 import datetime as dt
 import fnmatch
 import hashlib
@@ -42,15 +43,15 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Iterator
 
-from .apply import DIGEST_NEWS_SECTIONS, MAX_PROPOSAL_VALUES, file_stamp, stage_proposal, too_many_values
+from .apply import DIGEST_NEWS_SECTIONS, MAX_PROPOSAL_VALUES, created_file, file_stamp, stage_proposal, too_many_values
 from .clock import iso_now
 from .portal.checks import new_problems, validate_docs
 from .portal.diff import MODIFIED, REMOVED, REORDERED, Change, same
 from .portal.labels import (ANNOTATION_KEYS, DERIVED, LABEL, VERSION_KEYS, blanked, derived, emptied_citations, label_of, labels_behind,
-                            nearest_label, put_in_front, recited, relabelled, reworded, source_ids, stamped, unquotable, version_backed,
-                            versions_in, written)
+                            nearest_label, new_deep_dives, put_in_front, recited, relabelled, reworded, source_ids, stamped, unquotable,
+                            version_backed, versions_in, written)
 from .portal.protected import protected_changes
-from .portal.patch import Op, PatchError, get_at, split_path
+from .portal.patch import Op, PatchError, creates_file, get_at, split_path
 from .session import Evidence, ResearchSession
 from .skills import ROLES
 from .validate import dates as D
@@ -583,13 +584,17 @@ def _validate(session: ResearchSession, raw: Any, rep: Report) -> None:
             rep.err(f"ops[{i}]: {e}")
             continue
         if op.op == "create":
-            rep.err(f"ops[{i}]: 'create' is not available; new digests go in `digest`, new models via `add` on /models/-")
+            rep.err(f"ops[{i}]: 'create' is not available; new digests go in `digest`, new models via `add` on /models/-, and a new "
+                    "deep dive of a catalog model is an `add` with the path \"\" on data/models/<the model's id>.json")
             continue
         stamp = file_stamp(op.path)
         if stamp:
             rep.err(f"ops[{i}]: {op.file}/{stamp} is written by the harness, not by an operation"
                     + (" -- list the file under `asOfFiles` when you re-read every source it cites" if stamp == "asOf" else ""))
             continue
+        if creates_file(op):
+            # a new deep dive is saved as it will be written: its `asOf` is today's (a stamp), its `schema` the deep dives' one
+            op = dataclasses.replace(op, value=created_file(op.value, today_iso))
         ops.append(op)
     if len(ops) != len(raw_ops):
         return  # indices would no longer line up; report the shape errors first
@@ -944,6 +949,18 @@ def _holder_depth(c: Change) -> int | None:
     return None
 
 
+def _written_places(value: Any, path: str = "") -> Iterator[str]:
+    """The paths of the values ``value`` writes - every number, yes / no and text that is not blank - in document order."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            yield from _written_places(v, f"{path}/{k}")
+    elif isinstance(value, list):
+        for i, v in enumerate(value):
+            yield from _written_places(v, f"{path}/{i}")
+    elif value is not None and not (isinstance(value, str) and not value.strip()):
+        yield path
+
+
 def _string_leaves(value: Any, key: Any, path: str) -> Iterator[tuple[str, Any, str]]:
     if isinstance(value, dict):
         for k, v in value.items():
@@ -1099,14 +1116,18 @@ def _check_op(session: ResearchSession, rep: Report, i: int, op: Op, cited: _Cit
                         f"cite an {lbl} page that names it, or lower the label.")
 
         # ---- places without a label of their own that need a certain kind of page all the same ----
-        floor = _floor(op.file, c.path)
+        # (a file that is created is every place it writes to: its onboarding guide needs what an onboarding guide needs)
         noted = op.file == "data/catalog.json" and any(name in ANNOTATION_KEYS for name in c.fields if isinstance(name, str))
-        if floor and not noted:
-            tier, advisory, why = floor
+        needs: dict[tuple, str] = {}
+        for where in (_written_places(c.after) if c.path == "" and c.kind != MODIFIED else [c.path]):
+            floor = _floor(op.file, where)
+            if floor and floor not in needs:
+                needs[floor] = where
+        for (tier, advisory, why), where in needs.items() if not noted else ():
             if not any(_fits(e, RANK[tier], advisory) for e in on_topic):
                 kind = "an advisory page (an advisory database, or the project's own notice)" if advisory else f"{_a(tier)} {tier} page"
                 have = ", ".join(sorted({f"{e.tier.verification}-tier" + (f" ({e.tier.source_type})" if advisory else "") for e in on_topic}))
-                rep.err(f"{label}: {c.path} needs evidence from {kind}{' about ' + subject_c.shown if subject_c else ''}, and what is cited "
+                rep.err(f"{label}: {where} needs evidence from {kind}{' about ' + subject_c.shown if subject_c else ''}, and what is cited "
                         f"{'about it ' if subject_c else ''}is {have} ({', '.join(sorted({e.url for e in on_topic}))}): {why}. "
                         "Cite such a page, or list the finding under `unverified`.")
 
@@ -1284,6 +1305,10 @@ def _check_op(session: ResearchSession, rep: Report, i: int, op: Op, cited: _Cit
     if emptied:
         rep.warn(f"{label}: {', '.join(w.removeprefix(op.file) for w in emptied[:4])}{', ...' if len(emptied) > 4 else ''} would be left "
                  "empty; text that is taken away is a deletion, and an update that deletes data waits for a person to approve it")
+    for created in new_deep_dives(effect):
+        rep.warn(f"{label}: {created} is a new deep dive. Its dates, numbers and versions are checked like any others, but most of it is "
+                 "text that no program can compare with a quote: a new deep dive always waits for a person to approve it (its asOf is "
+                 "set to today)")
     computed_places = derived(effect)
     if computed_places:
         rep.warn(f"{label}: {', '.join(w.removeprefix(op.file) for w in computed_places[:4])}{', ...' if len(computed_places) > 4 else ''} "

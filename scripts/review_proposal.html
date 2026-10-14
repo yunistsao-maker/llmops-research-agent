@@ -176,11 +176,21 @@ function render(r, raw) {
         // What is added had no value before.  An `add` that carries one anyway is not something the agent writes (the
         // pipeline refuses it); showing it as "原值" would make an addition look like a small correction.
         const adds = op.op === "add", stray = adds && Object.prototype.hasOwnProperty.call(op, "before");
+        // An `add` at the path "" creates a whole file.  The one file an operation may create is a model's deep dive
+        // (data/models/<catalog model id>.json, the pattern of patch.DEEP_DIVE) that says it is that model's (modelId);
+        // everything in it is new, and it always waits for a person.  Whether the id is a catalog model's the pipeline checks.
+        const creates = adds && op.path === "";
+        const named = creates && typeof op.file === "string" ? /^data\/models\/([A-Za-z0-9][A-Za-z0-9._-]{0,99})\.json$/.exec(op.file) : null;
+        const dive = named !== null, mismatch = dive && obj(op.value).modelId !== named[1];
         add(h("div", { class: "card" },
-          h("h3", {}, h("code", {}, `${text(op.op)} ${text(op.file)}${text(op.path)}`)),
+          h("h3", {}, h("code", {}, `${text(op.op)} ${text(op.file)}${text(op.path)}`), creates ? [" ", chip("建立新檔案", "medium")] : null),
           stray ? banner("bad", "這個 add operation 帶有 before 欄位：新增的內容沒有原值，發布流程會拒絕這份提案。") : null,
-          h("div", { class: "diff" }, h("div", { class: "old" }, adds ? "（新增：原本沒有這個值）" : "原值\n" + fmt(op.before)),
-            h("div", { class: "new" }, op.op === "remove" ? "（刪除）" : "新值\n" + fmt(op.value))),
+          dive ? banner("warn", "新的 deep dive：portal 上原本沒有這個檔案，下面整份內容都是新增的。內容大多是文字，沒有引文可以逐字對照，"
+            + "所以新的 deep dive 一律等人核准（自動發布也一樣）：請逐段對照下面的引文與來源。asOf 由發布流程蓋成提案當天。") : null,
+          mismatch ? banner("bad", `這份 deep dive 的 modelId 是 ${text(obj(op.value).modelId) || "（沒有）"}，檔名卻是 ${named[1]}：deep dive 以它講的模型命名，發布流程會拒絕這份提案。`) : null,
+          creates && !dive ? banner("bad", `這個 operation 要建立 ${text(op.file)}：operation 只能建立模型的 deep dive（data/models/<catalog model id>.json），發布流程會拒絕這份提案。`) : null,
+          h("div", { class: "diff" }, h("div", { class: "old" }, creates ? "（新檔案：portal 上原本沒有這個檔案）" : adds ? "（新增：原本沒有這個值）" : "原值\n" + fmt(op.before)),
+            h("div", { class: "new" }, op.op === "remove" ? "（刪除）" : (creates ? "新檔案的完整內容\n" : "新值\n") + fmt(op.value))),
           op.rationale ? h("p", {}, text(op.rationale)) : null,
           ev.map(e => quote(e, `${text(e.tier) || "?"} · ${text(e.publisher)} · 抓取 ${text(e.fetchedAt)}`))));
       });
