@@ -12,6 +12,7 @@ import json
 import pytest
 from conftest import COMPAT, INVENTORY, PERF, T0, T1, T2, accepted_run, snapshot_tree, tool_file
 
+from portal_pipeline import notify as N
 from portal_pipeline import publish as P
 from portal_pipeline import releases as R
 from portal_pipeline.storage import Conflict
@@ -174,10 +175,10 @@ def test_an_accepted_proposal_becomes_a_new_release(plane):
         if rel not in outcome.changes["modified"]:
             assert after.files[rel] == before.files[rel], rel
     # the pointer says where the data came from, and keeps the history
-    assert after.manifest["source"] == {"kind": "agent", "by": "schedule", "proposalId": "prop-20261002T030000Z-1169b48e",
+    assert after.manifest["source"] == {"kind": "agent", "by": "schedule", "proposalId": "prop-20261002T030000Z-7dd4e9c6",
                                         "proposalSha256": P.proposal_sha256(accepted_run()["proposal"]), "runId": accepted_run()["runId"]}
     assert [h["kind"] for h in after.manifest["history"]] == ["agent", "bootstrap"]
-    assert after.manifest["history"][0]["proposalId"] == "prop-20261002T030000Z-1169b48e" and after.manifest["history"][0]["changed"] == 2
+    assert after.manifest["history"][0]["proposalId"] == "prop-20261002T030000Z-7dd4e9c6" and after.manifest["history"][0]["changed"] == 2
     assert after.manifest["previousReleaseId"] == base.release_id
     # the release carries its own audit trail: what changed, from what to what, and the quote that backs it
     ops = after.meta["operations"]
@@ -239,7 +240,7 @@ def test_a_proposal_made_against_sample_data_is_refused(plane):
     outcome = P.publish_proposal(plane.data, record, control=plane.control, now=T1)
     assert outcome.status == "rejected" and "SAMPLE" in outcome.reasons[0] and "PORTAL_DATA_URI" in outcome.reasons[0]
     assert live(plane).release_id == base.release_id
-    assert json.loads(plane.control.get("rejected/prop-20261002T030000Z-1169b48e.json").data)["reasons"] == outcome.reasons
+    assert json.loads(plane.control.get("rejected/prop-20261002T030000Z-7dd4e9c6.json").data)["reasons"] == outcome.reasons
 
 
 @pytest.mark.parametrize("change, expect", [
@@ -311,17 +312,17 @@ def test_in_review_mode_every_proposal_waits_for_approval(plane):
     assert outcome.changes["modified"] == ["data/lifecycle.json", "data/sources.json"]
     assert live(plane).release_id == base.release_id  # nothing is live yet
     pending = P.list_pending(plane.control)
-    assert [p["proposalId"] for p in pending] == ["prop-20261002T030000Z-1169b48e"]
+    assert [p["proposalId"] for p in pending] == ["prop-20261002T030000Z-7dd4e9c6"]
     assert pending[0]["baseReleaseId"] == base.release_id and "record" not in pending[0]
 
-    approved = P.approve(plane.data, plane.control, "prop-20261002T030000Z-1169b48e", actor="eunice", policy=P.Policy(mode="review"), now=T2)
+    approved = P.approve(plane.data, plane.control, "prop-20261002T030000Z-7dd4e9c6", actor="eunice", policy=P.Policy(mode="review"), now=T2)
     assert approved.status == "published"
     assert live(plane).manifest["source"]["approvedBy"] == "eunice" and event_date(live(plane).files) == "2026-11-30"
     assert P.list_pending(plane.control) == []
-    decided = json.loads(plane.control.get("decided/prop-20261002T030000Z-1169b48e.json").data)
+    decided = json.loads(plane.control.get("decided/prop-20261002T030000Z-7dd4e9c6.json").data)
     assert (decided["decision"], decided["state"], decided["by"], decided["releaseId"]) == ("approve", "done", "eunice", approved.release_id)
     with pytest.raises(R.ReleaseError, match="沒有待核准的提案"):
-        P.approve(plane.data, plane.control, "prop-20261002T030000Z-1169b48e", actor="eunice")
+        P.approve(plane.data, plane.control, "prop-20261002T030000Z-7dd4e9c6", actor="eunice")
 
 
 @pytest.mark.parametrize("policy, tweak, expect", [
@@ -375,17 +376,17 @@ def test_approval_does_not_bypass_validation(plane):
     newer = edit(live(plane).files, "data/lifecycle.json",
                  lambda d: next(e for e in d["events"] if e["id"] == EVENT).update(date="2026-12-05"))
     assert P.publish_tree(plane.data, newer, base_release=base.release_id, actor="eunice", now=T1).status == "published"
-    outcome = P.approve(plane.data, plane.control, "prop-20261002T030000Z-1169b48e", actor="eunice", now=T2)
+    outcome = P.approve(plane.data, plane.control, "prop-20261002T030000Z-7dd4e9c6", actor="eunice", now=T2)
     assert outcome.status == "rejected" and event_date(live(plane).files) == "2026-12-05"
-    assert [p["proposalId"] for p in P.list_pending(plane.control)] == ["prop-20261002T030000Z-1169b48e"]  # still there, to be discarded
+    assert [p["proposalId"] for p in P.list_pending(plane.control)] == ["prop-20261002T030000Z-7dd4e9c6"]  # still there, to be discarded
 
 
 def test_a_pending_proposal_can_be_discarded(plane):
     base = plane.bootstrap()
     P.publish_proposal(plane.data, accepted_run(), policy=P.Policy(mode="review"), control=plane.control, now=T1)
-    outcome = P.discard(plane.control, "prop-20261002T030000Z-1169b48e", actor="eunice", reason="日期要再確認", now=T2)
+    outcome = P.discard(plane.control, "prop-20261002T030000Z-7dd4e9c6", actor="eunice", reason="日期要再確認", now=T2)
     assert outcome.status == "discarded" and P.list_pending(plane.control) == [] and live(plane).release_id == base.release_id
-    decided = json.loads(plane.control.get("decided/prop-20261002T030000Z-1169b48e.json").data)
+    decided = json.loads(plane.control.get("decided/prop-20261002T030000Z-7dd4e9c6.json").data)
     assert (decided["decision"], decided["state"], decided["by"], decided["reason"]) == ("discard", "done", "eunice", "日期要再確認")
     for bad in ("prop-unknown", "../manifest", ""):
         with pytest.raises(R.ReleaseError):
@@ -597,7 +598,7 @@ def test_what_the_live_data_holds_is_not_discarded_because_the_record_of_its_rel
     assert P.rollback(plane.data, actor="bob", reason="先撤回", now=T2).status == "rolled_back"
     assert P.publish_proposal(plane.data, record, policy=review, control=plane.control, now=T2).status == "pending"
     monkeypatch.setattr(R, "HISTORY_LIMIT", 1)  # (a pointer keeps its last 60 releases: here, the last one)
-    monkeypatch.setattr(R, "VERSIONS_LIMIT", 1)  # (and the release of each of its last 7 days: here, today's)
+    monkeypatch.setattr(R, "VERSIONS_LIMIT", 1)  # (and the release of each of its last 30 days: here, today's)
     pushed = P.publish_tree(plane.data, corrected, base_release=base.release_id, actor="carol", note="同一個修正，手動發布",
                             now=T2 + dt.timedelta(hours=1))
     assert pushed.status == "published", pushed.reasons
@@ -724,7 +725,7 @@ def test_a_replace_that_deletes_data_waits_for_a_person(plane, build, where, cou
     reason = next((r for r in outcome.reasons if "會刪除資料" in r), "")
     assert outcome.status == "pending" and f"（{count} 處）" in reason and where in reason, outcome.to_state()
     assert outcome.review.count("removed") == count and live(plane).release_id == base.release_id
-    plane.control.delete("pending/prop-20261002T030000Z-1169b48e.json")
+    plane.control.delete("pending/prop-20261002T030000Z-7dd4e9c6.json")
     allowed = P.publish_proposal(plane.data, record, policy=P.Policy(allow_remove=True, max_op_changes=1000), control=plane.control, now=T1)
     assert allowed.status in ("published", "rejected")  # (the schema may still object; the removal no longer holds it)
     assert not any("會刪除資料" in r for r in allowed.reasons)
@@ -747,7 +748,7 @@ def test_the_limit_counts_changes_not_operations(plane):
     outcome = P.publish_proposal(plane.data, run_with(op("replace", "data/lifecycle.json", "/events", everything)), control=plane.control, now=T1)
     assert outcome.status == "pending" and any("實際會變更 66 處（修改 66、新增 0、刪除 0），超過自動發布的上限 60" in r for r in outcome.reasons), outcome.reasons
     # one operation, three values
-    plane.control.delete("pending/prop-20261002T030000Z-1169b48e.json")
+    plane.control.delete("pending/prop-20261002T030000Z-7dd4e9c6.json")
     three = run_with(op("replace", "data/lifecycle.json", f"/events/{EVENT}/notes", next(e for e in events() if e["id"] == EVENT)["notes"] + ["一。", "二。", "三。"]))
     tight = P.publish_proposal(plane.data, three, policy=P.Policy(max_ops=2), control=plane.control, now=T1)
     assert tight.status == "pending" and any("實際會變更 3 處" in r for r in tight.reasons) and not any("個 operation，超過" in r for r in tight.reasons)
@@ -960,7 +961,7 @@ def test_the_agents_flags_only_ever_make_the_publisher_stricter(plane):
     record["proposal"]["validation"]["flags"] = {"unseenUrls": ["https://evil.example/landing"], "instructionLikeText": []}
     outcome = P.publish_proposal(plane.data, record, control=plane.control, now=T1)
     assert outcome.status == "pending" and any("不是 portal 來源的連結" in r and "https://evil.example/landing" in r for r in outcome.reasons), outcome.reasons
-    plane.control.delete("pending/prop-20261002T030000Z-1169b48e.json")
+    plane.control.delete("pending/prop-20261002T030000Z-7dd4e9c6.json")
     # nothing flagged holds nothing ...
     for nothing in ({}, None, {"unseenUrls": []}, {"instructionLikeText": [], "somethingNew": []}, [], "", 0):
         record["proposal"]["validation"]["flags"] = nothing
@@ -973,7 +974,7 @@ def test_the_agents_flags_only_ever_make_the_publisher_stricter(plane):
         assert len(held) >= 1, odd
         outcome = P.publish_proposal(plane.data, record, control=plane.control, now=T1)
         assert outcome.status == "pending", (odd, outcome.reasons)
-        plane.control.delete("pending/prop-20261002T030000Z-1169b48e.json")
+        plane.control.delete("pending/prop-20261002T030000Z-7dd4e9c6.json")
     # what the validator could not attribute with certainty is said in its own words
     record["proposal"]["validation"]["flags"] = {"uncertainSubject": ["ops[0]: /events/x/date = 2026-11-30 (the line names two models)"]}
     assert any("程式無法確定引文講的就是這筆紀錄" in r and "the line names two models" in r for r in P.holds(record["proposal"], P.Policy()))
@@ -1211,6 +1212,60 @@ def test_a_digests_time_stamp_is_written_by_the_replay(plane):
     assert json.loads(live(plane).files["data/digests/2026-10-02.json"])["generatedAt"] == "2026-10-02T03:00:00Z"
 
 
+# what marks a digest entry: the subject it is about across days, a coverage note, the earlier entries it updates
+EARLIER_TITLE = "Azure o 系列統一在 2026-11-19 退役"  # lifecycleChanges of the 2026-09-24 digest
+
+
+def marked_digest(merges=(EARLIER_TITLE,)) -> dict:
+    earlier_action = json.loads(snapshot_tree()["data/digests/2026-09-24.json"])["actionItems"][3]["action"]
+    entry = {"title": "Azure o 系列退役時程複查", "detail": "官方表未變動。", "impact": "low", "sources": [{"id": "ms-foundry-retirement-schedule"}],
+             "topic": "lifecycle:azure-o-series", "check": True, "merges": list(merges)}
+    action = {"priority": "P1", "action": "Azure o 系列遷移（沿用前期項目）。", "topic": "lifecycle:azure-o-series", "merges": [earlier_action]}
+    return {**DIGEST, "lifecycleChanges": [entry], "actionItems": [action]}
+
+
+def without_digest_marks(files: dict[str, bytes]) -> dict[str, bytes]:
+    """``files`` with the portal schema as it was before digest entries could carry topic / check / merges."""
+    def strip(schema):
+        for name in ("topic", "check", "merges"):
+            schema["definitions"]["DigestItem"]["properties"].pop(name)
+        for name in ("topic", "merges"):
+            schema["definitions"]["DigestFile"]["properties"]["actionItems"]["items"]["properties"].pop(name)
+    return edit(files, "schema/llmops.schema.json", strip)
+
+
+def test_digest_marks_go_live_once_the_live_schema_knows_them(plane):
+    """The publisher replays a proposal on the live release and validates it with that release's schema: until the
+    portal's schema with topic / check / merges is live (portalctl push --only schema), a digest that uses them is refused."""
+    old = plane.bootstrap(without_digest_marks(snapshot_tree()))
+    record = accepted_run()
+    record["proposal"]["digest"] = marked_digest()
+    refused = P.publish_proposal(plane.data, copy.deepcopy(record), control=plane.control, now=T1)
+    assert refused.status == "rejected" and any("portal validation" in r and "Additional properties" in r and "'topic'" in r for r in refused.reasons), refused.reasons
+    assert live(plane).release_id == old.release_id and "data/digests/2026-10-02.json" not in live(plane).files
+    # the rollout: the schema first, then the proposals that use it
+    pushed = P.publish_tree(plane.data, snapshot_tree(), only=["schema"], base_release=old.release_id, actor="eunice", now=T1)
+    assert pushed.status == "published" and pushed.changes["modified"] == ["schema/llmops.schema.json"], (pushed.reasons, pushed.changes)
+    outcome = P.publish_proposal(plane.data, record, control=plane.control, now=T1)
+    assert outcome.status == "published", outcome.reasons
+    published = json.loads(live(plane).files["data/digests/2026-10-02.json"])
+    assert published["lifecycleChanges"][0]["merges"] == [EARLIER_TITLE] and published["lifecycleChanges"][0]["check"] is True
+    assert published["actionItems"][0]["topic"] == "lifecycle:azure-o-series"
+
+
+@pytest.mark.parametrize("merges", [["Azure o 系列統一在 2026-11-20 退役"], ["Claude Opus 5.5 降價"], ["Azure o 系列退役時程複查"]])
+def test_merges_that_name_no_earlier_entry_are_refused_on_replay(plane, merges):
+    """`merges` are not held to a quote because they are titles the portal already has: the replay checks that they are -
+    a title of the same section of an earlier digest - whatever the run record says about itself."""
+    base = plane.bootstrap()
+    record = accepted_run()
+    record["proposal"]["digest"] = marked_digest(merges)
+    outcome = P.publish_proposal(plane.data, record, control=plane.control, now=T1)
+    assert outcome.status == "rejected" and any("digest/lifecycleChanges/0/merges/0" in r and "is not the title of an entry of lifecycleChanges" in r
+                                                for r in outcome.reasons), outcome.reasons
+    assert live(plane).release_id == base.release_id
+
+
 def test_create_is_not_an_operation_a_proposal_can_use(plane):
     """It used to be: a whole page, with any `asOf`, published without one of the checks that are made per changed value."""
     base = plane.bootstrap()
@@ -1219,6 +1274,104 @@ def test_create_is_not_an_operation_a_proposal_can_use(plane):
         outcome = P.publish_proposal(plane.data, run_with({"file": name, "op": "create", "path": "", "value": page, "evidence": ["e1"], "rationale": "x"}),
                                      control=plane.control, now=T1)
         assert outcome.status == "rejected" and any("is not available" in r for r in outcome.reasons), (name, outcome.reasons)
+    assert live(plane).release_id == base.release_id and not any(k.startswith("data/models/") for k in live(plane).files)
+
+
+# ---------------------------------------------------------------------------------------------- a new deep dive
+def deep_dive(model_id: str, **changes) -> dict:
+    """A complete DeepDive for a catalog model (every required field)."""
+    doc = {"schema": "deep-dive/v1", "modelId": model_id, "title": "Claude Sonnet 5.5 技術深度解析", "locale": "zh-TW", "asOf": "2031-01-01",
+           "tldr": "平衡型模型，適合程式與 agent 工作。", "whatsNew": [], "breakingChanges": [], "availabilityMatrix": [], "apiCompatibility": [],
+           "strengths": ["程式與 agent 工作。"], "weaknesses": [], "bestFor": [], "avoidFor": [], "safetyAndCompliance": [], "enterpriseNotes": [],
+           "testPlanFocus": [], "openQuestions": [], "sources": [{"id": "anthropic-sonnet55-overview"}],
+           "onboarding": {"audience": "應用團隊", "prerequisites": [], "steps": [], "aliases": [], "parameterGuidance": [], "codeSamples": [],
+                          "dataClassification": "內部", "support": "平台團隊"}}
+    doc.update(changes)
+    return doc
+
+
+def creating(model_id: str, **changes) -> dict:
+    """The fixture run, creating the deep dive of ``model_id`` (an `add` at the path "", as the agent saves it)."""
+    record = run_with(op("add", f"data/models/{model_id}.json", "", deep_dive(model_id, **changes)))
+    record["proposal"]["id"] = "prop-20261002T030000Z-deepdive"
+    return record
+
+
+def test_a_new_deep_dive_always_waits_for_a_person_and_goes_into_the_release(plane):
+    """A catalog model without a deep dive gets one from a proposal - never without a person, whatever the policy lets
+    through; once approved, the release holds the file and the pointer's index lists it for the UI."""
+    base = plane.bootstrap()
+    m = model()
+    dive = f"data/models/{m['id']}.json"
+    assert dive not in live(plane).files and live(plane).manifest["models"] == []
+    record = creating(m["id"])
+    for policy in (P.Policy(), P.Policy(max_ops=500, max_op_changes=500, allow_remove=True)):
+        outcome = P.publish_proposal(plane.data, record, policy=policy, control=plane.control, now=T1)
+        assert outcome.status == "pending", outcome.to_state()
+        # the one reason: read from the real difference (a file under data/models/ that is not live and would be)
+        assert outcome.reasons == [f"提案會新增模型的 deep dive（{dive}）：內容大多是文字，沒有引文可以逐字對照，新的 deep dive 一律等人核准"], outcome.reasons
+        assert outcome.changes["added"] == [dive] and live(plane).release_id == base.release_id
+        state = outcome.to_state()
+        assert state["review"]["changes"][0]["file"] == dive and state["review"]["changes"][0]["path"] == "" and state["review"]["changes"][0]["kind"] == "added"
+        # the message names it as the file it is, not as a value added somewhere
+        assert f"  + {dive}（新檔案）\n      整個檔案 " in N.review_block(state["review"])
+    # the hold is the difference's, not the spelling's: a proposal that calls it something else is held as well (holds())
+    review = P.build_review(PortalData.from_mapping({k: json.loads(v) for k, v in snapshot_tree().items() if k.endswith(".json")}),
+                            PortalData.from_mapping({**{k: json.loads(v) for k, v in snapshot_tree().items() if k.endswith(".json")},
+                                                     "data/models/anything.json": deep_dive(m["id"])}), {"ops": []}, base.release_id)
+    assert any("data/models/anything.json" in r and "一律等人核准" in r for r in P.holds({"ops": []}, P.Policy(), review))
+    # what the person approves is what goes live: the file in the new release, stamped with the proposal's day
+    approved = P.approve(plane.data, plane.control, "prop-20261002T030000Z-deepdive", actor="eunice", now=T1)
+    assert approved.status == "published", approved.reasons
+    current = live(plane)
+    published = json.loads(current.files[dive])
+    assert published == dict(deep_dive(m["id"]), asOf="2026-10-02") and current.meta["changes"]["added"] == [dive]
+    assert current.meta["files"][dive]["sha256"] == R.sha256_hex(current.files[dive])
+    assert current.manifest["models"] == [m["id"]]  # the index the UI reads its deep dives from
+    assert set(current.files) - set(R.read_release(plane.data, base.release_id)[1]) == {dive}
+    # the notification names it as the file it creates
+    assert f"建立檔案 {dive}" in N.operations_block(approved.operations)
+    # and the same proposal again is the one that is live, not a clash with its own file
+    assert P.publish_proposal(plane.data, record, control=plane.control, now=T2).status == "already_published"
+
+
+def test_a_new_deep_dive_is_refused_when_the_file_appeared_meanwhile(plane):
+    """Research that wanted to create a deep dive which a person has published since: the replay finds the file there
+    and refuses - it never overwrites what is live (and a create is not a replace)."""
+    base = plane.bootstrap()
+    m = model()
+    dive = f"data/models/{m['id']}.json"
+    record = creating(m["id"])
+    assert P.publish_proposal(plane.data, record, control=plane.control, now=T1).status == "pending"
+    theirs = {**snapshot_tree(), dive: (json.dumps(deep_dive(m["id"], tldr="團隊自己寫的版本。", asOf="2026-10-02"), ensure_ascii=False, indent=2) + "\n").encode()}
+    manual = P.publish_tree(plane.data, theirs, base_release=base.release_id, actor="eunice", now=T1)
+    assert manual.status == "published", manual.reasons
+    outcome = P.approve(plane.data, plane.control, "prop-20261002T030000Z-deepdive", actor="eunice", now=T2)
+    assert outcome.status == "rejected" and any(f"{dive} already exists" in r for r in outcome.reasons), outcome.reasons
+    assert live(plane).release_id == manual.release_id and json.loads(live(plane).files[dive])["tldr"] == "團隊自己寫的版本。"
+    # a fresh run of the same research is refused the same way, before anybody is asked
+    again = creating(m["id"])
+    again["proposal"]["id"] = "prop-20261002T030000Z-deepdive2"
+    assert P.publish_proposal(plane.data, again, control=plane.control, now=T2).status == "rejected"
+
+
+@pytest.mark.parametrize("name, value, said", [
+    ("data/models/gpt-9-ultra.json", deep_dive("gpt-9-ultra"), "'gpt-9-ultra' is not the id of a model in data/catalog.json"),
+    ("data/models/claude-sonnet-5-5.json", deep_dive("claude-sonnet-5"), "modelId must be 'claude-sonnet-5-5'"),
+    ("data/models/.hidden.json", deep_dive(".hidden"), "an operation creates no file but a model's deep dive"),
+    ("data/models/-x.json", deep_dive("-x"), "an operation creates no file but a model's deep dive"),
+    ("data/../manifest.json", deep_dive("claude-sonnet-5-5"), "an operation creates no file but a model's deep dive"),
+    ("data/lifecycle.json", deep_dive("claude-sonnet-5-5"), "refusing to replace a whole file"),
+    ("data/requirements.json", deep_dive("claude-sonnet-5-5"), "an operation creates no file but a model's deep dive"),
+    ("data/models/claude-sonnet-5-5.json", dict(deep_dive("claude-sonnet-5-5"), tldr=None), "portal validation"),
+    ("data/models/claude-sonnet-5-5.json", deep_dive("claude-sonnet-5-5", sources=[{"id": "no-such-source"}]), "unknown source id 'no-such-source'"),
+])
+def test_a_create_that_is_not_a_new_deep_dive_of_a_catalog_model_is_refused_on_replay(plane, name, value, said):
+    """Whatever the run record says about itself: the replay creates nothing else, and checks the new file like the rest."""
+    base = plane.bootstrap()
+    outcome = P.publish_proposal(plane.data, run_with({"file": name, "op": "add", "path": "", "value": value, "evidence": ["e1"], "rationale": "x"}),
+                                 control=plane.control, now=T1)
+    assert outcome.status == "rejected" and any(said in r for r in outcome.reasons), (name, outcome.reasons)
     assert live(plane).release_id == base.release_id and not any(k.startswith("data/models/") for k in live(plane).files)
 
 
@@ -1391,7 +1544,7 @@ for _ in range(3000):
     lambda r: r["proposal"].update(asOfFiles="data/lifecycle.json"),
     lambda r: r["proposal"].update(touchSources=[{"id": "x"}]),
     lambda r: r["proposal"].update(id=5),
-    lambda r: r["proposal"].update(id="prop-20261002T030000Z-1169b48e\n"),
+    lambda r: r["proposal"].update(id="prop-20261002T030000Z-7dd4e9c6\n"),
     lambda r: r["proposal"].update(id=["prop-1"]),
     lambda r: r["proposal"].update(createdAt=None),
     lambda r: r["proposal"].update(createdAt=5),
@@ -1476,7 +1629,7 @@ def test_already_published_means_the_live_data_holds_it_not_that_it_was_publishe
     first = P.publish_proposal(plane.data, accepted_run(), control=plane.control, now=T1)
     assert P.publish_proposal(plane.data, accepted_run(), control=plane.control, now=T2).status == "already_published"
     P.rollback(plane.data, actor="eunice", now=T2)
-    assert any(h.get("proposalId") == "prop-20261002T030000Z-1169b48e" for h in live(plane).manifest["history"])
+    assert any(h.get("proposalId") == "prop-20261002T030000Z-7dd4e9c6" for h in live(plane).manifest["history"])
     assert P.resume(plane.data, actor="eunice", now=T2).status == "resumed"
     again = P.publish_proposal(plane.data, accepted_run(), control=plane.control, now=T2)
     assert again.status == "published" and again.release_id != first.release_id
@@ -1484,7 +1637,7 @@ def test_already_published_means_the_live_data_holds_it_not_that_it_was_publishe
 
 # ---------------------------------------------------------------------------------------------- what is approved is what was shown
 REVIEW = P.Policy(mode="review")
-PROP = "prop-20261002T030000Z-1169b48e"
+PROP = "prop-20261002T030000Z-7dd4e9c6"
 
 
 def test_a_waiting_proposal_is_kept_with_its_identity_and_what_it_would_change(plane):
@@ -1969,6 +2122,42 @@ def test_the_radar_editor_s_curation_suggestions_reach_the_approver():
     text = N._proposal_block(info)
     assert "Radar 整理建議" in text and "  - close：" in text and "no change" not in text
     assert "curation" not in P.brief({"id": "prop-2", "ops": [], "checked": ["plain string"]})
+
+
+def test_the_portal_reviewer_s_checks_reach_the_approver_failures_first():
+    from portal_pipeline import notify as N
+
+    checked = [{"topic": "Bedrock lifecycle", "result": "no change"},
+               *({"topic": "portal-qa", "result": f"PASS 檢查 {i}"} for i in range(10)),
+               {"topic": "portal-qa", "result": "TODO Gemini 3.5 Pro 是否已 GA：官方頁面讀不到"},
+               {"topic": "portal-qa", "result": "FAIL digest 2026-10-11 說 claude-haiku-5-5 已加入 catalog，\n但 catalog 沒有這筆"},
+               {"topic": "portal-qa", "result": "檢查了 watchlist"}, {"topic": "portal-qa", "result": ""}, "portal-qa"]
+    info = P.brief({"id": "prop-1", "summary": "s", "ops": [], "checked": checked})
+    assert info["portalQa"][0].startswith("FAIL digest") and "\n" not in info["portalQa"][0] and info["portalQa"][1].startswith("TODO")
+    assert info["portalQa"][2] == "檢查了 watchlist" and len(info["portalQa"]) == P.MAX_PORTAL_QA  # a line without a verdict before the passes
+    assert info["portalQaCounts"] == {"FAIL": 1, "TODO": 1, "PASS": 10, "other": 1}
+    text = N._proposal_block(info)
+    assert "Portal 健康檢查（FAIL 1、TODO 1、PASS 10、other 1）：" in text and "  - FAIL digest 2026-10-11" in text
+    assert text.index("FAIL digest") < text.index("TODO Gemini") < text.index("PASS 檢查 0") and "還有 1 項" in text and "no change" not in text
+    assert "portalQa" not in P.brief({"id": "prop-2", "ops": [], "checked": [{"topic": "radar-curation", "result": "merge"}]})
+    assert "Portal 健康檢查" not in N._proposal_block(P.brief({"id": "prop-2", "ops": []}))
+    state = P.Outcome("published", "agent", proposal=info).to_state()  # what travels through the state machine stays small
+    assert len(json.dumps(state, ensure_ascii=False)) < 10_000
+
+
+def test_a_proposal_s_leads_are_accepted_and_never_reach_the_portal(plane):
+    """`leads` are notes from one research role to another (the agent's handoff records): the publisher ignores them."""
+    plane.bootstrap()
+    record = accepted_run()
+    note = "Foundry 表的替代模型寫 claude-sonnet-5-5，請確認 Anthropic 的棄用頁。"
+    record["proposal"]["leads"] = [{"forRole": "vendor-api-researcher", "note": note,
+                                    "url": "https://learn.microsoft.com/en-us/azure/foundry/openai/concepts/model-retirement-schedule"}]
+    assert P.refusals(record["proposal"], record, P.Policy()) == []
+    outcome = P.publish_proposal(plane.data, record, control=plane.control, actor="schedule", now=T1)
+    assert outcome.status == "published", outcome.reasons
+    after = live(plane)
+    assert not any(note.encode("utf-8") in body for body in after.files.values())
+    assert "leads" not in P.brief(record["proposal"]) and note not in json.dumps(outcome.to_state(), ensure_ascii=False)
 
 
 def test_a_full_security_run_with_prompt_text_is_never_published():

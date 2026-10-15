@@ -76,6 +76,11 @@ REVIEWED_FILES = ("data/open-models.json",)
 #: ``checked`` entries with this topic are the Radar editor's suggestions for the curation file (skills/radar-editing)
 CURATION_TOPIC = "radar-curation"
 MAX_CURATION = 8
+#: ``checked`` entries with this topic are the portal QA reviewer's results, "PASS …" / "FAIL …" / "TODO …"
+#: (skills/portal-quality-review); a person reads them in the notification
+PORTAL_QA_TOPIC = "portal-qa"
+MAX_PORTAL_QA = 12
+PORTAL_QA_VERDICTS = ("FAIL", "TODO", "PASS")
 #: what a model in the catalog *is*: platformStatus was decided for this name and vendor id, so they do not change unseen
 _IDENTITY = re.compile(r"/models/[^/]+/(name|vendor|family|vendorModelId)(/.*)?")
 _ACCESSED = re.compile(r"/sources/([^/]+)/accessed")
@@ -333,12 +338,25 @@ def brief(proposal: Any, run: Any = None) -> dict:
     curation = [c for c in _list(proposal.get("checked")) if isinstance(c, dict) and c.get("topic") == CURATION_TOPIC]
     if curation:  # the Radar editor's merge / close / rewrite suggestions: a person applies them to the curation file
         out["curation"] = [_flat(c.get("result"), 300) for c in curation[:MAX_CURATION]]
+    qa = [_flat(c.get("result"), 300) for c in _list(proposal.get("checked"))[:500] if isinstance(c, dict) and c.get("topic") == PORTAL_QA_TOPIC]
+    qa = [line for line in qa if line]
+    if qa:  # the portal reviewer's check results: failures first, so that the cut never hides one behind a pass
+        verdicts = [_verdict(line) for line in qa]
+        rank = {"FAIL": 0, "TODO": 1, "other": 2, "PASS": 3}  # (a line without a verdict is not a pass)
+        out["portalQa"] = [line for _v, line in sorted(zip(verdicts, qa), key=lambda x: rank[x[0]])][:MAX_PORTAL_QA]
+        out["portalQaCounts"] = {v: verdicts.count(v) for v in (*PORTAL_QA_VERDICTS, "other")}
     if digest:
         out["digestId"] = _flat(digest.get("id"), 40)
         out["digestHeadline"] = _flat(digest.get("headline"), 500)
     if isinstance(run, dict) and run.get("runId"):
         out["runId"] = _flat(run["runId"], 100)
     return out
+
+
+def _verdict(line: str) -> str:
+    """FAIL / TODO / PASS - the first word of a portal-qa line - or "other"."""
+    word = line.split(None, 1)[0].rstrip(":：").upper() if line.strip() else ""
+    return word if word in PORTAL_QA_VERDICTS else "other"
 
 
 def portal_view(files: dict[str, bytes], release_id: str) -> PortalData:
@@ -518,6 +536,11 @@ def _diff_holds(review: Review, policy: Policy) -> list[str]:
     for rel in REVIEWED_FILES:
         if any(c.file == rel for c in review.changes + review.stamps):
             out.append(f"提案會修改 {rel}（開源模型的熱度分級、託管狀態與企業注意事項目前一律由人確認）")
+    # A new deep dive: every value in it is new, and most of it is prose that no quote can be compared with.  Read from
+    # the difference (a file under data/models/ that was not live and would be), however the proposal spelled it.
+    created = L.new_deep_dives(review.changes)
+    if created:
+        out.append("提案會新增模型的 deep dive（" + _listed(created) + "）：內容大多是文字，沒有引文可以逐字對照，新的 deep dive 一律等人核准")
     computed = L.derived(review.changes)
     if computed:
         out.append("提案新增或修改了標示為 derived 的內容（由其他資料推算，沒有引文可以對照），請確認推算成立：" + _listed(computed))
@@ -1412,7 +1435,8 @@ def publish_tree(store: Store, tree: dict[str, bytes], *, only: Iterable[str] | 
         listed = "、".join(conflicts[:6]) + ("…" if len(conflicts) > 6 else "")
         if base_release and not base_lost:
             reasons.append(f"這 {len(conflicts)} 個檔案在 checkout 和上線的資料裡都改過（checkout 取自 release {base_release}，上線中的是 {live_id}）：{listed}。"
-                           "先 pull（不會覆蓋妳改過的檔案）再處理，確定要以 checkout 為準才加 --force")
+                           "先 portalctl pull（data/ 的 JSON 會逐筆合併，不會覆蓋妳改過的內容）再 push；"
+                           "確定要整個檔案以 checkout 為準（上線在這些檔案的更新會被蓋掉）才加 --force")
         else:
             origin = f"記錄的來源 release {_flat(base_release, 40)} 已經讀不到" if base_release else "沒有記錄是從哪個 release 取得的"
             reasons.append(f"這次會改到研究資料（{listed}），但 checkout {origin}，而上線中的是 {live_id}："

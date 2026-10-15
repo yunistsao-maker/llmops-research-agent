@@ -250,6 +250,39 @@ def test_an_addition_is_not_shown_as_a_correction_of_something(view):
     assert "AWS 表列 EOL 2026-09-12。" not in shown_outside_the_raw_json(page)   # what the forged "before" said is not presented as the old value
 
 
+def test_a_new_deep_dive_is_shown_as_a_new_file_that_waits_for_a_person(view):
+    """An `add` at the path "" creates a whole file: shown as a file that was not there, every line of it new - not as a
+    value of an existing record - and said to wait for a person.  Creating any other file is pointed out as refused."""
+    dive = {"schema": "deep-dive/v1", "modelId": "claude-sonnet-5-5", "title": "Claude Sonnet 5.5 技術深度解析", "asOf": "2026-10-02",
+            "tldr": "平衡型模型，適合程式與 agent 工作。", "onboarding": {"audience": "應用團隊"}}
+    doc = copy.deepcopy(RUN)
+    doc["proposal"]["ops"] = [
+        {"file": "data/models/claude-sonnet-5-5.json", "op": "add", "path": "", "value": dive, "evidence": ["e1"], "rationale": "依官方模型頁建立"},
+        {"file": "data/catalog-2.json", "op": "add", "path": "", "value": {"x": 1}, "evidence": ["e1"], "rationale": "x"},
+        # under data/models/, but not a name a deep dive can have (patch.DEEP_DIVE): refused as well
+        {"file": "data/models/.claude-sonnet-5-5.json", "op": "add", "path": "", "value": dive, "evidence": ["e1"], "rationale": "x"},
+        # a deep dive whose modelId is another model's than its name says
+        {"file": "data/models/gpt-6-luna.json", "op": "add", "path": "", "value": dive, "evidence": ["e1"], "rationale": "x"},
+    ]
+    page, wrong = view(doc)
+    assert not wrong
+    cards = page.query_selector_all(".card:has(.diff)")
+    first, second, third, fourth = (" ".join(c.inner_text().split()) for c in cards)
+    assert "add data/models/claude-sonnet-5-5.json 建立新檔案" in first
+    assert "新的 deep dive：portal 上原本沒有這個檔案" in first and "一律等人核准" in first
+    diffs = page.query_selector_all(".diff")
+    assert diffs[0].query_selector(".old").inner_text() == "（新檔案：portal 上原本沒有這個檔案）"
+    content = diffs[0].query_selector(".new").inner_text()
+    assert content.startswith("新檔案的完整內容\n") and "平衡型模型，適合程式與 agent 工作。" in content and "應用團隊" in content  # all of it
+    for refused in (second, third):
+        assert "operation 只能建立模型的 deep dive" in refused and "發布流程會拒絕" in refused and "新的 deep dive" not in refused
+    assert "modelId 是 claude-sonnet-5-5，檔名卻是 gpt-6-luna" in fourth and "新的 deep dive" in fourth
+    assert [b.get_attribute("class") for b in cards[0].query_selector_all(".banner")] == ["banner warn"]
+    for card in cards[1:3]:
+        assert [b.get_attribute("class") for b in card.query_selector_all(".banner")] == ["banner bad"]
+    assert [b.get_attribute("class") for b in cards[3].query_selector_all(".banner")] == ["banner warn", "banner bad"]
+
+
 @pytest.mark.parametrize("literal, listed", [("1" + "0" * 400, "1000000000000000000000000000000000000000…（401 位）"), ("9007199254740993", "9007199254740993"), ("1e999", "1e999")])
 def test_a_number_the_browser_cannot_hold_is_pointed_out_not_shown_as_something_else(view, literal, listed):
     """JSON.parse turns 10**400 into Infinity (printed as null) and 2**53 + 1 into its neighbour: what the page showed
@@ -348,6 +381,28 @@ def test_everything_a_digest_holds_is_on_the_screen(view):
     # a digest that holds nothing but what the layout draws has no such section
     page, wrong = view(RUN)
     assert not wrong and not any(e.inner_text().startswith("digest 的其他內容") for e in page.query_selector_all("#out h2"))
+
+
+def test_what_marks_an_entry_is_drawn_with_it(view):
+    """An entry's topic, its `check` (a coverage note, not news) and the earlier entries it folds in (`merges`) are
+    published with it: they are drawn on its card, and a yes / no the layout draws is not listed again among "the rest"."""
+    doc = copy.deepcopy(RUN)
+    digest = doc["proposal"]["digest"]
+    digest["newModels"][0].update(topic="new-models:model-x", check=True, merges=["Model X 預告", "Model X（預覽）"])
+    digest["actionItems"][0].update(topic="lifecycle:model-x", merges=["更新 EOL 日期（前期項目）"])
+    page, wrong = view(doc)
+    assert not wrong
+    text = " ".join(shown_outside_the_raw_json(page).split())
+    for expected in ("主題：new-models:model-x", "涵蓋紀錄：查過、沒有變化", "併入先前的項目", "Model X 預告", "Model X（預覽）",
+                     "主題：lifecycle:model-x", "更新 EOL 日期（前期項目）"):
+        assert expected in text, expected
+    assert not any(e.inner_text().startswith("digest 的其他內容") for e in page.query_selector_all("#out h2"))
+    # a `check` of another value is shown as it is; a yes / no the layout has no place for is still listed
+    digest["newModels"][0].update(check=False, breaking=True)
+    page, wrong = view(doc)
+    assert not wrong and "check：false" in " ".join(shown_outside_the_raw_json(page).split())
+    rest = page.evaluate("[...document.querySelectorAll('#out h2')].find(e => e.innerText.startsWith('digest 的其他內容')).nextElementSibling.innerText")
+    assert "newModels[0].breaking" in rest and "newModels[0].check" not in rest, rest
 
 
 def test_flags_of_a_kind_the_page_has_no_sentence_for_are_shown_too(view):

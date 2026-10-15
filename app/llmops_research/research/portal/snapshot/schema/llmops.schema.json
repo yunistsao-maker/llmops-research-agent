@@ -682,6 +682,14 @@
               "due": {
                 "$ref": "#/definitions/ISODate"
               },
+              "merges": {
+                "description": "Exact `action` texts of action items in earlier digests that this item updates.",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 10,
+                "type": "array"
+              },
               "priority": {
                 "$ref": "#/definitions/Priority"
               },
@@ -690,6 +698,12 @@
                   "type": "string"
                 },
                 "type": "array"
+              },
+              "topic": {
+                "description": "The subject of this action item, the same across days (see DigestItem.topic).",
+                "maxLength": 100,
+                "pattern": "^[a-z0-9][a-z0-9-]*(?::[a-z0-9][a-z0-9._-]*){1,3}$",
+                "type": "string"
               }
             },
             "required": [
@@ -795,6 +809,10 @@
     "DigestItem": {
       "additionalProperties": false,
       "properties": {
+        "check": {
+          "description": "true: a coverage note (\"checked, no change\"), not news.",
+          "type": "boolean"
+        },
         "clouds": {
           "items": {
             "$ref": "#/definitions/Cloud"
@@ -815,6 +833,14 @@
           ],
           "type": "string"
         },
+        "merges": {
+          "description": "Exact titles of entries of the same section in earlier digests that this entry updates.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 10,
+          "type": "array"
+        },
         "sources": {
           "items": {
             "$ref": "#/definitions/SourceRef"
@@ -822,6 +848,12 @@
           "type": "array"
         },
         "title": {
+          "type": "string"
+        },
+        "topic": {
+          "description": "The subject this entry is about, the same across days (e.g. \"pricing:claude-sonnet-5-5\"): entries with the same topic are merged into one Radar card.",
+          "maxLength": 100,
+          "pattern": "^[a-z0-9][a-z0-9-]*(?::[a-z0-9][a-z0-9._-]*){1,3}$",
           "type": "string"
         },
         "vendor": {

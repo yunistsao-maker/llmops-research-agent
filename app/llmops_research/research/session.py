@@ -102,6 +102,10 @@ class ResearchSession:
         self.suspicious_results: list[str] = []
         #: text in the portal's own data that reads like an instruction to an AI ("<file><path>: <excerpt>"): withheld from the model
         self.suspicious_portal: list[str] = []
+        #: the same in the handoff notes of earlier runs ("<role> <runId>: <excerpt>", research/handoff.py): withheld from the model
+        self.suspicious_notes: list[str] = []
+        #: the last proposal the model submitted, accepted or not: what it says is handed on to the next runs (research/handoff.py)
+        self.last_submitted: Any = None
         #: what the search results that were shown said (title, snippet, date): a lead the run "came across" may come
         #: from there - nothing is ever proved by it
         self.result_texts: list[str] = []

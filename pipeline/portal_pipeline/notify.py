@@ -225,7 +225,22 @@ def _proposal_block(p: Any) -> str:
         f"未能確認的項目：{ext(p.get('unverified'), 6)} 項（請在 portal 的「本期尚未驗證」核對）" if p.get("unverified") else None,
         *(["Radar 整理建議（確認後由人寫進 portal repo 的 radar/curation.json）："]
           + [f"  - {ext(s, 300)}" for s in p["curation"][:8]] if isinstance(p.get("curation"), list) and p["curation"] else []),
+        *_portal_qa(p),
     )
+
+
+def _portal_qa(p: dict) -> list[str]:
+    """The portal QA reviewer's check results (publish.brief: FAIL first, at most 12 lines)."""
+    lines = p.get("portalQa")
+    if not isinstance(lines, list) or not lines:
+        return []
+    counts = p.get("portalQaCounts") if isinstance(p.get("portalQaCounts"), dict) else {}
+    told = "、".join(f"{ext(k, 10)} {ext(v, 6)}" for k, v in list(counts.items())[:4] if isinstance(v, int) and v)
+    total = sum(v for v in counts.values() if isinstance(v, int) and not isinstance(v, bool))
+    shown = [f"  - {ext(s, 300)}" for s in lines[:12]]
+    if total > len(shown):
+        shown.append(f"  …（還有 {total - len(shown)} 項，完整內容在提案的 checked）")
+    return [f"Portal 健康檢查（{told}）：" if told else "Portal 健康檢查：", *shown]
 
 
 def review_block(review: Any, *, limit: int | None = MAX_CHANGES, width: int | None = 160, proposal_id: str = "") -> str:
@@ -253,6 +268,8 @@ def review_block(review: Any, *, limit: int | None = MAX_CHANGES, width: int | N
             lines += [f"  - {where}", f"      刪除 {_value(c.get('before'), width)}"]
         elif kind == "reordered":
             lines += [f"  ⇅ {where}", f"      順序 {_value(c.get('before'), width)} → {_value(c.get('after'), width)}"]
+        elif kind == "added" and c.get("path") == "":  # a whole file that was not live (a new deep dive)
+            lines += [f"  + {where}（新檔案）", f"      整個檔案 {_value(c.get('after'), width)}"]
         elif kind == "added":
             lines += [f"  + {where}", f"      新增 {_value(c.get('after'), width)}"]
         else:  # a kind this version does not know: shown as it is, never as something it is not
@@ -290,7 +307,9 @@ def operations_block(operations: Any, *, limit: int | None = MAX_OPERATIONS, wid
     verbs = {"add": "新增", "replace": "修改", "remove": "刪除", "create": "建立檔案"}
     lines = [f"提案的理由與引文（{len(ops)} 個 operation" + (f"，列出前 {len(shown)} 個" if len(shown) < len(ops) else "") + "）："]
     for i, op in enumerate(shown, 1):
-        lines.append(f"  {i}. {verbs.get(str(op.get('op')), ext(op.get('op'), 20))} {ext(op.get('file'), 120)}{ext(op.get('path'), 240)}")
+        # (an `add` at the path "" creates the file: a new deep dive)
+        verb = "建立檔案" if op.get("op") == "add" and op.get("path") == "" else verbs.get(str(op.get("op")), ext(op.get("op"), 20))
+        lines.append(f"  {i}. {verb} {ext(op.get('file'), 120)}{ext(op.get('path'), 240)}")
         if op.get("rationale"):
             lines.append(f"       理由：{ext(op['rationale'], width)}")
         evidence = [e for e in op.get("evidence") or [] if isinstance(e, dict)] if isinstance(op.get("evidence"), list) else []

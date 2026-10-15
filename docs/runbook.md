@@ -172,10 +172,18 @@ portalctl push --portal ../llmops-portal --note "修正 gpt-6-sol 的 context wi
 
 - `push` 會先顯示會變更哪些檔案並詢問；在 CI 裡加 `--yes`。
 - **push 是逐檔合併，不是整包取代。** 基準是 checkout 當初 pull 下來的那個 release（記在 `.portal-release.json`）：妳沒改的檔案維持上線中的版本，
-  只有妳改過的採用 checkout 的；兩邊都改過的是衝突，會停下來並列出檔案。先 `pull` 再處理；確定要以 checkout 為準才加 `--force`。
+  只有妳改過的採用 checkout 的；上線在這之間也改過的檔案是衝突，會停下來並列出檔案——不會悄悄蓋掉 agent 的更新。先 `pull`（會逐筆合併，見下）再 push；
+  `--force` 是整個檔案以 checkout 為準，上線在那個檔案的其他更新也會被蓋掉。
 - checkout 沒有來源紀錄時（從來沒有 pull 過）：只新增與取代，不刪除（要刪除上線中有、checkout 沒有的檔案要加 `--delete`），
   而且和上線的版本不同的研究資料檔會被當成衝突——這是為了不讓舊的 checkout 蓋掉 agent 的更新。`--only runs,…` 這種只發布工具產出的用法不受影響。
-- `pull` 也是合併：**不會覆蓋妳在 checkout 裡改過的檔案**。兩邊都改過的檔案會列為衝突（exit code 4），本機的版本原封不動；確定要用上線的版本取代才加 `--overwrite`。
+- `pull` 也是合併：**不會覆蓋妳在 checkout 裡改過的內容**。只有上線改過的檔案直接寫入；**兩邊都改過的 `data/` 底下的 JSON 逐筆合併**，例如
+  `≈ data/catalog.json（合併：上線版本 +2 筆、本機 +1 筆）`：物件逐個 key、紀錄清單依紀錄的 key 對齊（`id`、`service`、`feature`、`scope`、`alias`、
+  `endpoint`，軟體版本用 `version`——和 agent 的 operation 指定紀錄的方式相同）。只有一邊新增／修改／刪除的採用那一邊；兩邊新增的紀錄都留下，
+  排在原有紀錄之後（上線的在前）；最上層的 `asOf`／`generatedAt` 兩邊都改時取較晚的時間。schema、`runs/`、`config/` 仍然整個檔案比較。
+  **兩邊把同一個值改得不一樣**（一邊刪除、另一邊修改同一筆紀錄；沒有 key 的清單兩邊都改）才是衝突（exit code 4），會列出 JSON pointer 與兩邊的值，
+  例如 `/events/azure-claude-sonnet-4-5-eol/date`，本機的版本原封不動。處理方式：把列出的位置在 checkout 裡改成上線的值再 pull 一次
+  （要保留妳的值，pull 完成後再改回來、push）；或加 `--overwrite`，讓有衝突的檔案整個換成上線的版本。
+  合併完成後 checkout 以剛 pull 的 release 為基準，合併進來的本機修改仍是「妳的修改」：下一次 push 才會發布。
   **有衝突時 pull 什麼都不寫**——其他檔案不更新，來源紀錄也不動（只做一半的話，下一次 push 會把沒更新到的檔案當成妳的修改）。先決定衝突的檔案再 pull 一次。
   `pull --dry-run` 預覽的結果會停下來時，exit code 同樣是 4。
   上線已經移除、而妳沒改過的檔案會從 checkout 刪掉（這樣 checkout 才等於它記錄的那個 release）；checkout 沒有來源紀錄時不會刪除任何檔案。
@@ -260,8 +268,8 @@ execution 的細節：Step Functions console → state machine → 那一次 exe
 
 | prefix | 內容 | 誰寫 | 保存 |
 | --- | --- | --- | --- |
-| `portal/manifest.json` | 指標（含自動發布的暫停旗標與最近 60 次發布的摘要） | Publish function、`portalctl` | 舊版本 180 天（versioning） |
-| `portal/releases/<id>/` | 不可變的資料版本 | 同上 | 永久（rollback 需要） |
+| `portal/manifest.json` | 指標（含自動發布的暫停旗標、最近 60 次發布的摘要，與最近 30 天每個台北日期結束時上線的 release：`versions`） | Publish function、`portalctl` | 舊版本 180 天（versioning） |
+| `portal/releases/<id>/` | 不可變的資料版本：每一個 release 都是它當時內容的紀錄（`release.json` 記著來源、差異與引文） | 同上 | 永久，永不刪除（rollback 需要；`versions` 只是指向其中 30 天的名單） |
 | `research/runs/`、`research/proposals/` | 每次研究的完整紀錄（提案、引文、抓過的頁面、token 用量） | agent | `ResultRetentionDays`（預設 365 天） |
 | `pipeline/pending/`、`decided/`、`rejected/` | 待核准、已決定、被拒絕的提案 | Publish function、`portalctl` | 永久（檔案很小） |
 | `artifacts/` | Lambda bundle | `build_lambdas.py --upload` | 永久；舊的可以手動刪 |

@@ -31,6 +31,22 @@ def test_exactly_one_role_writes_the_digest():
     assert [r.name for r in S.ROLES.values() if r.digest] == ["radar-editor"]
 
 
+def test_the_portal_reviewer_checks_the_whole_portal_before_the_editor_writes():
+    order = list(S.ROLES)
+    assert order[-2:] == ["portal-reviewer", "radar-editor"]  # after every research role, before the digest
+    reviewer = S.ROLES["portal-reviewer"]
+    assert reviewer.title == "Portal QA reviewer" and reviewer.focus == ("coverage",) and not reviewer.digest
+    assert reviewer.skills == (S.SHARED, "portal-quality-review")
+    assert [r.name for r in S.ROLES.values() if r.overview] == ["portal-reviewer", "radar-editor"]  # they see every handoff note
+    from research.prompts import _FOCUS_HELP, KNOWN_FOCUS, WEEKLY_FOCUS
+
+    assert "coverage" in KNOWN_FOCUS and "coverage" not in WEEKLY_FOCUS and "portal_health()" in _FOCUS_HELP["coverage"]
+    body = S.load_skill("portal-quality-review").body
+    for needle in ("portal_health()", '"portal-qa"', "PASS", "FAIL", "TODO", '"digest": null', "leads", "not reached:", "unverified"):
+        assert needle in body, needle
+    assert parse_payload({"kind": "focus", "role": "portal-reviewer"})["focus"] == ["coverage"]
+
+
 def test_a_broken_skill_file_is_refused(tmp_path):
     def write(name: str, text: str) -> None:
         (tmp_path / name).mkdir()
@@ -112,8 +128,21 @@ def test_the_daily_orchestrator_runs_every_role_once_and_the_editor_last():
     tasks = [(name, s) for name, s in states.items() if s["Type"] == "Task"]
     roles = [s["Parameters"]["Input"]["request"]["role"] for _, s in tasks]
     assert sorted(roles) == sorted(S.ROLES) and len(roles) == len(set(roles))
-    assert roles[-1] == "radar-editor"
+    assert roles == list(S.ROLES)  # the order of skills.ROLES is the order of the day: the reviewer, then the editor, last
+    assert roles[-2:] == ["portal-reviewer", "radar-editor"]
     assert states["AllRoles"]["Result"] == roles  # "no roles given" means every role, in this order
+    # each role: a flag in Plan, a Check state that runs it, a failure the outcome sees; the stack says which roles there are
+    flags = {v.split("'")[1]: k.removesuffix(".$") for k, v in states["Plan"]["Parameters"]["run"].items()}
+    assert sorted(flags) == sorted(S.ROLES)
+    failed = {c["Variable"] for c in states["Outcome"]["Choices"][0]["Or"]}
+    for name, s in tasks:
+        role = s["Parameters"]["Input"]["request"]["role"]
+        check = states[f"Check{flags[role]}"]
+        assert flags[role] == name and check["Choices"][0] == {"Variable": f"$.run.{name}", "BooleanEquals": True, "Next": name}
+        assert f"$.failed.{name}" in failed and s["Catch"][0]["ResultPath"] == f"$.failed.{name}"
+    assert _template("infra/daily-orchestrator.yaml")["Outputs"]["Roles"]["Value"] == ",".join(S.ROLES)
+    reviewer = dict(tasks)["PortalReviewer"]["Parameters"]["Input"]["request"]
+    assert reviewer == {"kind": "focus", "role": "portal-reviewer", "budget": {"searches": 8, "fetches": 14, "toolCalls": 70}}
     for name, s in tasks:
         task = parse_payload(s["Parameters"]["Input"]["request"])  # what the agent will receive (via the pipeline)
         assert task["focus"] and task["budget"]
@@ -128,6 +157,9 @@ def test_the_github_workflow_lists_the_same_roles():
     run = next(s["run"] for s in flow["jobs"]["start"]["steps"] if s.get("name", "").startswith("Start"))
     listed = [r for r in S.ROLES if f'"{r}"' in run]
     assert listed == list(S.ROLES)
+    triggers = flow.get("on", flow.get(True))  # (YAML 1.1 reads the key `on` as true)
+    described = triggers["workflow_dispatch"]["inputs"]["roles"]["description"].split(":", 1)[1]
+    assert [r.strip() for r in described.split(",")] == list(S.ROLES)
     assert flow["permissions"] == {"id-token": "write", "contents": "read"}
     uses = [s["uses"] for s in flow["jobs"]["start"]["steps"] if "uses" in s]
     assert all(len(u.split("@")[1]) == 40 for u in uses), "actions are pinned to a commit"

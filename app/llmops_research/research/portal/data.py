@@ -191,15 +191,22 @@ class PortalData:
         lc = self.docs.get("data/lifecycle.json", {})
         cat = self.docs.get("data/catalog.json", {})
         digests = sorted(k for k in self.docs if k.startswith("data/digests/"))
+        models = [m.get("id") for m in cat.get("models", []) if isinstance(m, dict)] if isinstance(cat.get("models"), list) else []
+        dives = sorted(Path(k).stem for k in self.docs if k.startswith("data/models/"))
+        # the models a deep dive is about: by its file name, and by what it says (a file of another name - patch.create_problem)
+        covered = set(dives) | {d["modelId"] for k, d in self.docs.items()
+                                if k.startswith("data/models/") and isinstance(d, dict) and isinstance(d.get("modelId"), str)}
         return {
             "manifest": self.manifest,
             "sources": len(self.sources),
-            "models": [m.get("id") for m in cat.get("models", [])],
+            "models": models,
             "lifecycleEvents": len(lc.get("events", [])),
             "lifecycleAsOf": lc.get("asOf"),
             "catalogAsOf": cat.get("asOf"),
             "digests": [Path(d).stem for d in digests],
-            "deepDives": sorted(Path(k).stem for k in self.docs if k.startswith("data/models/")),
+            "deepDives": dives,
+            # catalog models that no deep dive is about: a proposal may create data/models/<id>.json for each (it waits for a person)
+            "modelsWithoutDeepDive": [m for m in models if isinstance(m, str) and m not in covered],
             **({"openModels": [m.get("id") for m in om.get("models", []) if isinstance(m, dict)], "openModelsAsOf": om.get("asOf")}
                if isinstance(om := self.docs.get("data/open-models.json"), dict) else {}),
         }

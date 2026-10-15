@@ -17,18 +17,23 @@ import datetime as dt
 import difflib
 import json
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
 from .portal.checks import is_date, is_datetime, new_problems, validate_docs
 from .portal.data import PortalData
-from .portal.diff import Change, diff_value, same
-from .portal.patch import Op, PatchError, apply_op, file_is_editable, get_at, is_index, positions_on_the_way, split_path
+from .portal.diff import Change, diff_docs, diff_value, same
+from .portal.patch import (Op, PatchError, apply_op, creates_file, file_is_editable, get_at, is_index, positions_on_the_way,
+                           split_path)
 from .portal.protected import protected_changes
 
 PROPOSAL_SCHEMA = "llmops-research-proposal/v1"
-#: top-level fields of a data file that only this module writes (generatedAt on every change, asOf through `asOfFiles`)
+#: top-level fields of a data file that only this module writes (generatedAt on every change, asOf through `asOfFiles`
+#: - and in a new deep dive: ``created_file``)
 FILE_STAMPS = ("asOf", "generatedAt", "schema")
+#: the `schema` a deep dive is written in (the portal schema's const for DeepDive.schema)
+DEEP_DIVE_SCHEMA = "deep-dive/v1"
 _DIGEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")  # becomes a file name: data/digests/<id>.json
 #: The values (texts, numbers, lists, objects) one proposal may hold, everything in it counted.  All of a portal's data
 #: is some twenty thousand values and a proposal changes a few records of it; a research run's largest proposal holds
@@ -74,13 +79,36 @@ def _pointer(segs: list[str]) -> str:
     return "".join("/" + seg.replace("~", "~0").replace("/", "~1") for seg in segs)
 
 
+def created_file(value: Any, today_iso: str) -> Any:
+    """A new deep dive as staging writes it.  Its `asOf` - "the content is current as of" - is the day of the research
+    that wrote it: a stamp, like every `asOf`, and not the proposal's to say (a page published with a later `asOf` would
+    claim a verification nobody made).  Its `schema` is the one deep dives are written in, unless the value names one
+    (which the portal schema then checks)."""
+    if not isinstance(value, dict):
+        return copy.deepcopy(value)
+    doc = {"schema": DEEP_DIVE_SCHEMA, **copy.deepcopy(value)}
+    doc["asOf"] = today_iso
+    return doc
+
+
 def out_of_step(today: dict[str, Any], now: dict[str, Any], op: Op) -> str | None:
     """Why ``op`` is not about the portal data as it is today (None when it is).
 
     Operations are applied one after another, but each one is checked, shown to a reviewer and compared with the live
     data against *today's* value (``before``).  That is only true while no operation works on something an earlier
     operation of the same proposal created, moved or changed: ``now`` is the data as those earlier operations left it.
+
+    The creation of a deep dive (``add`` at the path "") is the one operation that may rest on an earlier one: it has
+    no ``before`` - nothing of today's that it is compared with or shown next to - and all it reads of the earlier
+    operations is whether the catalog has the model by then (``patch.create_problem``), so it may follow the operation
+    that adds the model.  That operation is checked against today's catalog like any other, a replay applies both in
+    the same order (and refuses both when either no longer applies), and a later operation that takes the model away
+    again leaves a deep dive of no catalog model, which the cross-file check refuses.  Nothing may follow it into the
+    new file: its whole content is the one operation that creates it (the first check here).
     """
+    if op.file not in today and op.file in now:
+        return ("the file does not exist in the portal data as it is today: an earlier operation of this proposal creates it. Put the "
+                "complete content into that operation instead")
     if op.file not in today or op.file not in now or not file_is_editable(op.file):
         return None  # apply_op says what is wrong with the file
     try:
@@ -176,6 +204,96 @@ def digest_problems(digest: Any, today_iso: str) -> list[str]:
     return out
 
 
+#: the sections of a digest whose entries the portal's Radar merges by title (the portal's tools/build_radar.py SECTIONS)
+DIGEST_NEWS_SECTIONS = ("newModels", "lifecycleChanges", "pricingChanges", "litellm", "security", "regulatory")
+#: what one entry's `merges` may list (the schema's maxItems)
+MAX_MERGES = 10
+_MERGE_PROBLEMS = 20  # told one by one; the rest are counted
+_MERGE_HINTS = 5  # problems that get a "did you mean" (each one is a fuzzy search through the earlier titles)
+# the portal's tools/build_radar.py: the "【10-06 補充】" marker of a supplemented digest, and what counts as punctuation
+_MARKER = re.compile(r"【[^】]{0,40}補充[^】]*】")
+_PUNCT = re.compile(r"[\s，,。．.：:；;、（）()「」『』\"'“”‘’!！?？…—–\-/]+")
+
+
+def merge_key(text: str) -> str:
+    """``text`` the way the portal's Radar compares titles and action texts (tools/build_radar.py ``norm``): NFKC, without
+    the marker of a supplemented digest, every run of punctuation and white space one space, lower case."""
+    t = unicodedata.normalize("NFKC", text)
+    t = _MARKER.sub("", t)
+    return _PUNCT.sub(" ", t).strip().lower()
+
+
+def merge_problems(digest: Any, docs: dict[str, Any]) -> list[str]:
+    """`merges` of a new digest that do not name an entry of an earlier one.
+
+    An entry's `merges` lists the titles of entries of the same section in earlier digests that it updates (an action
+    item's, the `action` texts of earlier action items); the portal's Radar folds those into this one.  They are
+    references, not news, so the agent's validator does not hold the dates and amounts in them to a quote - which is
+    only sound while each of them IS the title of an entry the portal already has (and that was checked when it went
+    live).  So every one must be - after the Radar's own normalisation (:func:`merge_key`) - the title of an entry of
+    the same section of a digest in ``docs`` whose period ends before this one's.  Any shape is answered, never raised.
+    """
+    if not isinstance(digest, dict) or not isinstance(docs, dict):
+        return []
+    end = digest.get("periodEnd")
+    if not (isinstance(end, str) and is_date(end)):
+        return []  # digest_problems says what is wrong with the period
+    places = [(section, "title") for section in DIGEST_NEWS_SECTIONS] + [("actionItems", "action")]
+    known: dict[str, dict[str, str]] = {section: {} for section, _field in places}  # section -> merge key -> the text as written
+    for rel, doc in docs.items():
+        if not (isinstance(rel, str) and rel.startswith("data/digests/") and isinstance(doc, dict)):
+            continue
+        when = doc.get("periodEnd")
+        if not (isinstance(when, str) and is_date(when) and when < end):
+            continue
+        for section, field in places:
+            items = doc.get(section)
+            for item in items if isinstance(items, list) else []:
+                key = merge_key(item[field]) if isinstance(item, dict) and isinstance(item.get(field), str) else ""
+                if key:
+                    known[section].setdefault(key, item[field])
+
+    out: list[str] = []
+    untold = 0
+
+    def tell(text: str) -> None:
+        nonlocal untold
+        if len(out) < _MERGE_PROBLEMS:
+            out.append(text)
+        else:
+            untold += 1
+
+    for section, field in places:
+        what = "title" if field == "title" else "action text"
+        of = f"an entry of {section}" if field == "title" else "an action item"
+        items = digest.get(section)
+        for n, item in enumerate(items if isinstance(items, list) else []):
+            if not isinstance(item, dict) or "merges" not in item:
+                continue
+            where = f"digest/{section}/{n}/merges"
+            merges = item["merges"]
+            if not isinstance(merges, list) or not all(isinstance(m, str) for m in merges):
+                tell(f"{where}: must be a list of texts - the exact {what}s of earlier entries this one updates")
+                continue
+            if len(merges) > MAX_MERGES:
+                tell(f"{where}: lists {len(merges)} earlier entries; at most {MAX_MERGES}")
+                continue
+            for k, value in enumerate(merges):
+                key = merge_key(value)
+                if key and key in known[section]:
+                    continue
+                hint = ""
+                if key and len(out) < _MERGE_HINTS:
+                    close = difflib.get_close_matches(key[:300], list(known[section]), n=1, cutoff=0.6)
+                    hint = f" (the closest is {known[section][close[0]][:200]!r})" if close else ""
+                tell(f"{where}/{k}: {value[:200]!r} is not the {what} of {of} in an earlier digest{hint}. `merges` names entries "
+                     f"the portal already has, which this one updates: copy each {what} exactly as it stands in "
+                     "data/digests/<date>.json (lookup_portal shows them), or leave it out")
+    if untold:
+        out.append(f"... and {untold} more `merges` that name no entry of an earlier digest")
+    return out
+
+
 def stage_proposal(
     portal: PortalData,
     *,
@@ -227,12 +345,17 @@ def stage_proposal(
             elif problem:
                 errors.append(f"{label}: {problem}")
             else:
+                if creates_file(op):
+                    op = dataclasses.replace(op, value=created_file(op.value, today_iso))
+                existed = op.file in staged.docs
                 before = copy.deepcopy(staged.docs.get(op.file)) if effects is not None else None
                 applied.append(apply_op(staged.docs, op))
                 touched.add(op.file)
                 if effects is not None:
-                    effect = [dataclasses.replace(c, after=copy.deepcopy(c.after))
-                              for c in diff_value(before, staged.docs[op.file], file=op.file)]
+                    # a file this operation created is added as a whole - every value in it is new (as in the
+                    # publisher's comparison of the live data with the result)
+                    found = diff_value(before, staged.docs[op.file], file=op.file) if existed else diff_docs({}, {op.file: staged.docs[op.file]})
+                    effect = [dataclasses.replace(c, after=copy.deepcopy(c.after)) for c in found]
         except PatchError as e:
             errors.append(f"{label}: {e}")
         if effects is not None:
@@ -263,7 +386,8 @@ def stage_proposal(
         else:
             entry = copy.deepcopy(digest)
             entry["generatedAt"] = now_iso
-            problems = digest_problems(entry, today_iso)
+            # `merges` must name entries the portal had before this proposal: checked here, so a replay checks it again
+            problems = digest_problems(entry, today_iso) + merge_problems(entry, portal.docs)
             errors.extend(problems)
             if not problems:
                 staged.docs[key] = entry
@@ -383,17 +507,22 @@ def already_applied(portal: PortalData, proposal: dict) -> bool:
     if not (raw_ops or new_sources or digest):
         return False
     try:
-        return _already_applied(portal, raw_ops, new_sources, digest)
+        return _already_applied(portal, raw_ops, new_sources, digest, proposal.get("today") or proposal["createdAt"][:10])
     except Exception:  # damaged data or a shape nobody thought of: "not applied" sends it through the full validation
         return False
 
 
-def _already_applied(portal: PortalData, raw_ops: list, new_sources: list, digest: dict | None) -> bool:
+def _already_applied(portal: PortalData, raw_ops: list, new_sources: list, digest: dict | None, today_iso: str) -> bool:
     try:
         for raw in raw_ops:
             op = Op.from_dict({k: v for k, v in raw.items() if k != "before"})
             if op.file not in portal.docs or op.op not in ("add", "replace", "remove"):
                 return False
+            if creates_file(op):
+                # the file the proposal creates, as staging would write it (another file of that name is not this one)
+                if not _same(portal.docs[op.file], created_file(op.value, today_iso)):
+                    return False
+                continue
             if op.op == "remove":
                 try:
                     get_at(portal.docs, op.file, op.path)

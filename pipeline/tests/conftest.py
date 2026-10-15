@@ -86,7 +86,7 @@ def write_tree(root: Path, files: dict[str, bytes]) -> Path:
 
 #: The fixture proposal's id.  It is spelled out in the tests (they read better with the real text of a notification
 #: or a command in them); this is the one place that notices when the fixture was regenerated with another id.
-PROPOSAL_ID = "prop-20261002T030000Z-1169b48e"
+PROPOSAL_ID = "prop-20261002T030000Z-7dd4e9c6"
 
 
 def accepted_run() -> dict:

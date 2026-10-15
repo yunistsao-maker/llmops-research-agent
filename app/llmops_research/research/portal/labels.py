@@ -16,6 +16,8 @@ from typing import Any, Iterable, Iterator
 from .diff import ADDED, MODIFIED, REMOVED, REORDERED, Change, same
 
 LABEL = "verification"
+#: where the deep dives are (one file per catalog model: data/models/<id>.json)
+DEEP_DIVES = "data/models/"
 DERIVED = "derived"
 #: fields that annotate a record rather than state its core fact; changing them does not re-assert the record's label
 ANNOTATION_KEYS = frozenset({
@@ -353,6 +355,15 @@ def source_ids(record: Any) -> list[str]:
 
     walk(record)
     return sorted(found)
+
+
+def new_deep_dives(changes: Iterable[Change]) -> list[str]:
+    """The deep dives that come into being: a data/models/<id>.json that was not there and is now (the file, as a whole).
+
+    A deep dive is mostly prose - what is new about the model, what breaks, how to onboard it, where it is strong - and
+    its dates, numbers and versions are the least of it.  Its every value is new, and what no quote can be compared
+    with is all of the text: a new one is not for a machine alone, however well each figure in it is quoted."""
+    return [c.file for c in changes if c.kind == ADDED and c.path == "" and c.file.startswith(DEEP_DIVES)]
 
 
 def emptied_citations(changes: Iterable[Change]) -> list[str]:

@@ -21,6 +21,7 @@ from strands import ToolContext, tool
 
 from .evidence import line_of as _line_of
 from .evidence import record_quote
+from .portal.health import health_report
 from .portal.patch import PatchError, get_at
 from .portal.schema_text import render_definition
 from .prompts import PROPOSAL_FORMAT
@@ -502,6 +503,22 @@ def build_tools(session: ResearchSession) -> list:
 
     # ------------------------------------------------------------------------------------
     @tool
+    def portal_health() -> str:
+        """Check the portal as a whole (no web access, no budget): catalog models without a deep dive and deep dives without a
+        catalog model, watchlist entries that name a catalog model, lifecycle events that look duplicated, records whose
+        lastVerified is older than 14 days, newest digest entries that name a model the portal does not track (or say a model
+        was added to the catalog when it is not there), the tiers each vendor has in the catalog, and nearly identical action
+        items of the last 30 days. Every finding is a lead to verify on official pages, not a fact."""
+        session.tick(count_only=True)
+        try:
+            report = health_report(session.portal.docs, session.today)
+        except Exception as e:  # the checks guard themselves; this is the last line
+            log.warning("portal_health failed: %s", e)
+            return _err(f"portal_health failed: {type(e).__name__}: {e}")
+        return _json({**_as_data(report, "portal_health"), "note": PORTAL_NOTE})
+
+    # ------------------------------------------------------------------------------------
+    @tool
     def review_work() -> str:
         """List the pages you fetched, the evidence you recorded and the budget left. Use it before submitting, or if you lose track of ids."""
         s = session
@@ -523,10 +540,11 @@ def build_tools(session: ResearchSession) -> list:
         operations is valid when nothing needs changing (say what you checked in `checked`).
 
         Args:
-            proposal: The proposal object (summary, ops, newSources, digest, asOfFiles, unverified, checked).
+            proposal: The proposal object (summary, ops, newSources, digest, asOfFiles, unverified, checked, leads).
         """
         session.counters["tool_calls"] += 1
         session.counters["submit"] += 1
+        session.last_submitted = proposal
         if session.counters["submit"] > MAX_SUBMITS:
             return _err(f"too many submissions ({MAX_SUBMITS}); the run ends without a proposal. Summarise what blocked you in your final message.")
         report = validate_proposal(session, proposal)
@@ -543,5 +561,5 @@ def build_tools(session: ResearchSession) -> list:
             "message": "Fix every error and call submit_proposal again with the full corrected proposal. If a fact cannot be supported, remove that operation and list it under `unverified`.",
         })
 
-    return [web_search, fetch_page, find_in_page, read_page, list_links, record_evidence, lookup_portal, describe_schema, review_work,
-            submit_proposal]
+    return [web_search, fetch_page, find_in_page, read_page, list_links, record_evidence, lookup_portal, describe_schema, portal_health,
+            review_work, submit_proposal]

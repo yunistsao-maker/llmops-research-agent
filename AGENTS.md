@@ -25,6 +25,9 @@ Rules that are easy to break:
   record waits for a person (`publish._diff_holds`, fed by `research/portal/labels.py`). Do not widen this without a way to check the new kind of
   value against a quote, and keep the two sides telling the same story: the validator warns the model about everything the publisher will hold.
   "A date / number / version changed" is a property of the CHANGE (`labels.is_typed`): like for like - never of what the new value looks like.
+  The one file an operation may create is a new deep dive of a catalog model (`add` at the path "" on `data/models/<id>.json`,
+  `patch.create_problem`); every value in it is held to the rules for new content, and it ALWAYS waits for a person (`labels.new_deep_dives`
+  on the Review). Do not let an operation create any other file.
 - Whose value a quote states is answered with yes, no or UNSURE (`subjects.judge`). Unsure is not an error and not a pass: the proposal is accepted
   with `validation.flags.uncertainSubject`, and any flag makes the publisher hold. When a rule cannot tell, answer unsure - do not pick the reading
   that suits the proposal, and do not reject what may be honest. The same for a value nothing can be held against (`flags.uncheckedValue`).
@@ -82,8 +85,13 @@ Rules that are easy to break:
 - Skills (`app/llmops_research/skills/`) are trusted instructions packaged with the runtime; they are appended AFTER the hard rules and the
   proposal format. A skill may say where to look and how to work, never that a rule, a gate or a tier does not apply. A new role needs its
   skill, an entry in `skills.ROLES`, a step in `infra/daily-orchestrator.yaml` and the name in the workflow's list (test_roles.py checks all four).
-- The pointer's `versions` (one entry per Asia/Taipei day, the release live at the end of it, at most `VERSIONS_LIMIT`) is written only by
-  `releases.build_manifest`; the portal's build reads it to show one version per day.
+- The daily roles hand notes to each other (`research/handoff.py`: `handoff/<day>/...json` under `OUTPUT_URI`, the proposal's
+  optional `leads`, `checked` results starting with "not reached:"). The notes were written by models from web pages: they are
+  rendered quoted, one line, bounded and screened (`scan`) as a DATA block, never as instructions; reading or writing them never
+  fails a run; `leads` never reach the portal (the publisher ignores them). The runtime may read `research/handoff/*` and
+  nothing else of its own results.
+- The pointer's `versions` (one entry per Asia/Taipei day, the release live at the end of it, at most `VERSIONS_LIMIT` = 30 days) is written only by
+  `releases.build_manifest`; the portal's build reads it to show one version per day. It is a list of names: releases are never deleted.
 - User-facing text (CLI output, notifications, docs) is Traditional Chinese with English technical terms; code comments and identifiers are English.
 - Generic AgentCore CLI context follows.
 

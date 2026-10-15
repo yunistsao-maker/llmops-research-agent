@@ -1,7 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   The daily LLMOps research run: one execution runs the research roles one after another - Bedrock, Azure, Google
-  Cloud, vendor APIs, LiteLLM, open-weight models - and the Release Radar editor last, each as an execution of the
+  Cloud, vendor APIs, LiteLLM, open-weight models - then the portal QA reviewer and the Release Radar editor last
+  (the roles hand notes to each other through the research results store), each as an execution of the
   portal update pipeline (research on AgentCore, validate, publish, notify). Started by GitHub Actions
   (.github/workflows/daily-research.yml, via infra/github-oidc.yaml) or, as a fallback, by its own schedule. A role
   that fails does not stop the others; the execution then ends failed (DailyRunIncomplete) so the alarm and GitHub
@@ -78,9 +79,9 @@ Resources:
         PipelineStateMachineArn: !Ref PipelineStateMachineArn
       # Input: {} (every role) or {"roles": ["bedrock-researcher", ...]}; "trigger" / "by" name who started it.
       Definition:
-        Comment: "LLMOps daily research: every role in order, the Radar editor last"
+        Comment: "LLMOps daily research: every role in order, the portal reviewer before the Radar editor, the Radar editor last"
         StartAt: Init
-        TimeoutSeconds: 36000
+        TimeoutSeconds: 39600
         States:
           Init:
             Type: Choice
@@ -91,7 +92,7 @@ Resources:
             Default: AllRoles
           AllRoles:
             Type: Pass
-            Result: ["bedrock-researcher", "azure-researcher", "gcp-researcher", "vendor-api-researcher", "litellm-researcher", "open-model-scout", "radar-editor"]
+            Result: ["bedrock-researcher", "azure-researcher", "gcp-researcher", "vendor-api-researcher", "litellm-researcher", "open-model-scout", "portal-reviewer", "radar-editor"]
             ResultPath: "$.roles"
             Next: Plan
           # which roles run: a flag per role (Choice cannot call intrinsic functions itself)
@@ -106,6 +107,7 @@ Resources:
                 "VendorApis.$": "States.ArrayContains($.roles, 'vendor-api-researcher')"
                 "LiteLLM.$": "States.ArrayContains($.roles, 'litellm-researcher')"
                 "OpenModels.$": "States.ArrayContains($.roles, 'open-model-scout')"
+                "PortalReviewer.$": "States.ArrayContains($.roles, 'portal-reviewer')"
                 "RadarEditor.$": "States.ArrayContains($.roles, 'radar-editor')"
             Next: CheckBedrock
           CheckBedrock:
@@ -244,7 +246,7 @@ Resources:
               - Variable: "$.run.OpenModels"
                 BooleanEquals: true
                 Next: OpenModels
-            Default: CheckRadarEditor
+            Default: CheckPortalReviewer
           OpenModels:
             Type: Task
             Resource: "arn:aws:states:::states:startExecution.sync:2"
@@ -262,6 +264,33 @@ Resources:
             Catch:
               - ErrorEquals: ["States.ALL"]
                 ResultPath: "$.failed.OpenModels"
+                Next: CheckPortalReviewer
+            Next: CheckPortalReviewer
+          CheckPortalReviewer:
+            Type: Choice
+            Choices:
+              - Variable: "$.run.PortalReviewer"
+                BooleanEquals: true
+                Next: PortalReviewer
+            Default: CheckRadarEditor
+          # the portal as a whole (catalog / deep dives / watchlist / digests / lifecycle), before the editor writes the digest
+          PortalReviewer:
+            Type: Task
+            Resource: "arn:aws:states:::states:startExecution.sync:2"
+            Parameters:
+              StateMachineArn: "${PipelineStateMachineArn}"
+              "Name.$": "States.Format('{}-portalreviewer', $$.Execution.Name)"
+              Input:
+                request: {"kind": "focus", "role": "portal-reviewer", "budget": {"searches": 8, "fetches": 14, "toolCalls": 70}}
+                trigger: "daily-portal-reviewer"
+                "AWS_STEP_FUNCTIONS_STARTED_BY_EXECUTION_ID.$": "$$.Execution.Id"
+            TimeoutSeconds: 4800
+            ResultSelector:
+              "status.$": "$.Status"
+            ResultPath: "$.results.PortalReviewer"
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: "$.failed.PortalReviewer"
                 Next: CheckRadarEditor
             Next: CheckRadarEditor
           CheckRadarEditor:
@@ -305,6 +334,8 @@ Resources:
                   - Variable: "$.failed.LiteLLM"
                     IsPresent: true
                   - Variable: "$.failed.OpenModels"
+                    IsPresent: true
+                  - Variable: "$.failed.PortalReviewer"
                     IsPresent: true
                   - Variable: "$.failed.RadarEditor"
                     IsPresent: true
@@ -376,4 +407,4 @@ Outputs:
     Value: !Ref DailyStateMachine
   Roles:
     Description: The role names a run may list in "roles"
-    Value: bedrock-researcher,azure-researcher,gcp-researcher,vendor-api-researcher,litellm-researcher,open-model-scout,radar-editor
+    Value: bedrock-researcher,azure-researcher,gcp-researcher,vendor-api-researcher,litellm-researcher,open-model-scout,portal-reviewer,radar-editor

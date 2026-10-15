@@ -7,6 +7,11 @@ can be addressed by their ``id`` instead of a fragile numeric index::
     {"file": "data/lifecycle.json", "op": "add",     "path": "/events/-",                               "value": {...}}
 
 Pointer segments use JSON-pointer escaping (``~1`` = ``/``, ``~0`` = ``~``).
+
+One operation creates a file, and only one kind of file: the deep dive of a model the catalog has, as ``add`` with the
+path "" and the whole DeepDive as its value (``create_problem`` says what else must hold)::
+
+    {"file": "data/models/<catalog model id>.json", "op": "add", "path": "", "value": {"modelId": "<catalog model id>", ...}}
 """
 
 from __future__ import annotations
@@ -20,6 +25,11 @@ ALLOWED_FILES = (
     "data/catalog.json", "data/lifecycle.json", "data/litellm.json", "data/requirements.json", "data/open-models.json",
 )
 EDITABLE_PATTERNS = (re.compile(r"^data/models/[A-Za-z0-9._-]+\.json\Z"),)
+#: The one kind of file an operation may create: a model's deep dive, named after the model's catalog id.  (Narrower than
+#: the files that may be edited: a name that begins with "." or "-" is no data path the UI asks for - storage._KEY.)
+DEEP_DIVE = re.compile(r"data/models/([A-Za-z0-9][A-Za-z0-9._-]{0,99})\.json")  # used with fullmatch
+DEEP_DIVES = "data/models/"
+CATALOG = "data/catalog.json"
 #: array elements can be addressed by the value of one of these keys instead of their position (the first that matches)
 ID_KEYS = ("id", "service", "feature", "alias", "name", "scope", "endpoint", "title")
 #: The keys among them that say which record an element IS.  ``name`` and ``title`` can address an element, but they are
@@ -61,6 +71,57 @@ class Op:
 
 def file_is_editable(rel: str) -> bool:
     return rel in ALLOWED_FILES or any(p.match(rel) for p in EDITABLE_PATTERNS)
+
+
+def creates_file(op: "Op") -> bool:
+    """Is ``op`` spelled as the creation of a whole file (``add`` at the path "")?  Whether it may create THAT file is
+    ``create_problem``'s answer."""
+    return op.op == "add" and op.path == ""
+
+
+def catalog_ids(docs: dict[str, Any]) -> set[str]:
+    """The ids of the models in ``docs``' catalog (whatever shape it has)."""
+    catalog = docs.get(CATALOG)
+    models = catalog.get("models") if isinstance(catalog, dict) else None
+    return {m["id"] for m in models if isinstance(m, dict) and isinstance(m.get("id"), str)} if isinstance(models, list) else set()
+
+
+def create_problem(docs: dict[str, Any], op: "Op") -> str | None:
+    """Why ``op`` (``add`` at the path "") may not create ``op.file`` in ``docs`` - None when it may.
+
+    A file is created only when it is a deep dive that does not exist yet, of a model that ``docs``' catalog has (the
+    catalog as it stands at this operation: an earlier operation of the same proposal may have added the model) and
+    that no other deep dive is about already, and that says it is that model's (``modelId``).  Everything else -
+    another file, a file that is there, a deep dive of no catalog model, a second one of a model - is refused: a new
+    record goes into its list, a digest into `digest`, a source into `newSources`.
+    """
+    found = DEEP_DIVE.fullmatch(op.file)
+    if found is None:
+        if op.file in docs:
+            return "refusing to replace a whole file; address a field or array element"
+        return (f"an operation creates no file but a model's deep dive (data/models/<catalog model id>.json), and {op.file} is not one: a new "
+                "record is an `add` on its list (e.g. /models/-), a new digest goes in `digest`, a new source in `newSources`")
+    if op.file in docs:
+        return (f"{op.file} already exists: a deep dive is created once. Change the fields that differ instead "
+                "(e.g. `add /whatsNew/-`, `replace /tldr`)")
+    model_id = found[1]
+    if model_id not in catalog_ids(docs):
+        return (f"{model_id!r} is not the id of a model in {CATALOG} (as it stands at this operation): a deep dive belongs to a catalog "
+                "model and is named after its id. Add the model first (an earlier operation of this proposal, `add` on /models/-), "
+                "or name the file after the model's catalog id")
+    # (a deep dive under another name that says it is about this model: a second one would leave the portal two)
+    other = next((rel for rel, doc in sorted(docs.items())
+                  if rel.startswith(DEEP_DIVES) and isinstance(doc, dict) and doc.get("modelId") == model_id), None)
+    if other is not None:
+        return (f"{other} is a deep dive of {model_id!r} already (its modelId): a model has one deep dive. Change that one field by "
+                "field instead; a deep dive whose file name is not its model's id is for a person to rename")
+    if not isinstance(op.value, dict):
+        return "a deep dive is one object of the type DeepDive (describe_schema shows it)"
+    if op.value.get("modelId") != model_id:
+        shown = op.value.get("modelId")
+        return (f"the deep dive's modelId is {str(shown)[:80]!r}{'' if isinstance(shown, str) else ' (not text)'} and its file is "
+                f"{op.file}: a deep dive is named after the model it is about, so modelId must be {model_id!r}")
+    return None
 
 
 def _unescape(seg: str) -> str:
@@ -198,7 +259,14 @@ def apply_op(docs: dict[str, Any], op: Op) -> str:
     """Apply one operation in place.  Returns a short human-readable description."""
     if op.op not in ("add", "replace", "remove"):
         # "create" is understood by Op.from_dict only so that it can be turned down with a reason
-        raise PatchError(f"operation {op.op!r} is not available: a new digest goes in `digest`, a new record is an `add` (e.g. on /models/-)")
+        raise PatchError(f"operation {op.op!r} is not available: a new digest goes in `digest`, a new record is an `add` (e.g. on /models/-), "
+                         "a new deep dive is an `add` with the path \"\" on data/models/<catalog model id>.json")
+    if creates_file(op) and (op.file not in docs or DEEP_DIVE.fullmatch(op.file)):
+        problem = create_problem(docs, op)
+        if problem:
+            raise PatchError(problem)
+        docs[op.file] = copy.deepcopy(op.value)
+        return f"create {op.file}"
     if op.file not in docs:
         raise PatchError(f"unknown file {op.file}")
     if not file_is_editable(op.file):

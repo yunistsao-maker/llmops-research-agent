@@ -1,5 +1,5 @@
 # Starts the daily LLMOps research run in AWS (infra/daily-orchestrator.yaml): Bedrock, Azure, Google Cloud, vendor APIs,
-# LiteLLM and open-weight research, then the Release Radar editor. Each role publishes through the portal update
+# LiteLLM and open-weight research, then the portal QA reviewer and the Release Radar editor. Each role publishes through the portal update
 # pipeline, which notifies by e-mail; the portal rebuilds after each publish and ui-verify sends "Daily update live".
 #
 # One-time setup (docs/daily-agents-design.md, section 6):
@@ -21,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       roles:
-        description: "Roles to run, comma separated (empty = all): bedrock-researcher, azure-researcher, gcp-researcher, vendor-api-researcher, litellm-researcher, open-model-scout, radar-editor"
+        description: "Roles to run, comma separated (empty = all): bedrock-researcher, azure-researcher, gcp-researcher, vendor-api-researcher, litellm-researcher, open-model-scout, portal-reviewer, radar-editor"
         required: false
         default: ""
       wait:
@@ -91,7 +91,7 @@ jobs:
           input=$(python3 -I - <<'PY'
           import json, os, re, sys
           known = ["bedrock-researcher", "azure-researcher", "gcp-researcher", "vendor-api-researcher",
-                   "litellm-researcher", "open-model-scout", "radar-editor"]
+                   "litellm-researcher", "open-model-scout", "portal-reviewer", "radar-editor"]
           asked = [r.strip() for r in os.environ.get("ROLES", "").split(",") if r.strip()]
           bad = [r for r in asked if r not in known]
           if bad:

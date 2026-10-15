@@ -222,7 +222,12 @@ def test_the_research_agent_can_read_the_data_but_never_write_it():
     assert len(writes) == 1 and actions(writes[0]) == ["s3:PutObject"]
     assert writes[0]["Resource"] == {"Fn::Sub": "${DataBucket.Arn}/research/*"}  # results only: never portal/, never pipeline/
     reads = [s for s in stmts if "s3:GetObject" in actions(s) and s["Effect"] == "Allow"]
-    assert [s["Resource"] for s in reads] == [{"Fn::Sub": "${DataBucket.Arn}/portal/*"}]
+    # the portal data, and of its own results only the handoff notes the daily roles leave each other (research/handoff.py):
+    # run records and proposals stay out of its reach
+    assert [s["Resource"] for s in reads] == [{"Fn::Sub": "${DataBucket.Arn}/portal/*"}, {"Fn::Sub": "${DataBucket.Arn}/research/handoff/*"}]
+    listings = [s for s in stmts if "s3:ListBucket" in actions(s)]
+    assert [s["Condition"]["StringLike"]["s3:prefix"] for s in listings] == [["portal/*", "portal"], ["research/handoff/*"]]
+    assert all(s["Resource"] == {"Fn::GetAtt": "DataBucket.Arn"} for s in listings)
     assert "pipeline/" not in text(stmts)
     # ...and of what is under portal/, the files that are none of its business are denied outright
     denied = [s for s in stmts if s["Effect"] == "Deny"]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 
 import pytest
@@ -273,15 +274,19 @@ def test_the_pointer_keeps_one_version_per_taipei_day_the_last_release_of_that_d
     assert [(v["date"], v["releaseId"][-8:]) for v in m["versions"]] == [("2026-10-03", "00000003"), ("2026-10-02", "00000002")]
 
 
-def test_only_the_latest_seven_days_are_kept():
+def test_only_the_latest_thirty_days_are_kept():
+    """A month of daily versions (it was a week).  The releases themselves are never deleted: the list only names them."""
+    assert R.VERSIONS_LIMIT == 30
+    days = [dt.date(2026, 9, 1) + dt.timedelta(days=n) for n in range(42)]  # 2026-09-01 .. 2026-10-12
     m = None
-    for day in range(1, 13):
-        m = _publish_at(m, f"202610{day:02d}T010000Z-{day:08d}", f"2026-10-{day:02d}T01:00:00Z")
-    assert [v["date"] for v in m["versions"]] == [f"2026-10-{d:02d}" for d in range(12, 5, -1)]
-    assert len(m["versions"]) == R.VERSIONS_LIMIT
+    for n, day in enumerate(days, 1):
+        m = _publish_at(m, f"{day:%Y%m%d}T010000Z-{n:08d}", f"{day.isoformat()}T01:00:00Z")
+    assert [v["date"] for v in m["versions"]] == [d.isoformat() for d in reversed(days[-30:])]
+    assert len(m["versions"]) == R.VERSIONS_LIMIT and m["versions"][-1]["date"] == "2026-09-13"
     # a rollback on the 12th makes the target the version of the 12th (what was live at the end of the day)
-    m = _publish_at(m, "20261011T010000Z-00000011", "2026-10-12T05:00:00Z")
-    assert m["versions"][0] == {"date": "2026-10-12", "releaseId": "20261011T010000Z-00000011", "publishedAt": "2026-10-12T05:00:00Z"}
+    m = _publish_at(m, "20261011T010000Z-00000041", "2026-10-12T05:00:00Z")
+    assert m["versions"][0] == {"date": "2026-10-12", "releaseId": "20261011T010000Z-00000041", "publishedAt": "2026-10-12T05:00:00Z"}
+    assert len(m["versions"]) == 30 and len(json.dumps(m)) < 60_000  # (the pointer stays small: the UI downloads it on every load)
 
 
 def test_a_pointer_from_before_versions_is_seeded_from_its_history():

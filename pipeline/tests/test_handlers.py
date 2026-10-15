@@ -131,7 +131,7 @@ def test_an_accepted_result_is_handed_to_the_publish_step_by_key(wired):
     key = wired.save_run(accepted_run())
     state = H.check_research(started())
     assert state["research"]["status"] == "accepted" and state["research"]["runKey"] == key == f"runs/{RUN}.json"
-    assert state["research"]["proposalId"] == "prop-20261002T030000Z-1169b48e" and state["research"]["checks"] == 1
+    assert state["research"]["proposalId"] == "prop-20261002T030000Z-7dd4e9c6" and state["research"]["checks"] == 1
     # the proposal itself stays in S3: the state only carries where to find it
     assert set(state["research"]) == {"status", "checks", "runKey", "recordSha256", "finishedAt", "stopReason", "totalTokens", "elapsedSeconds", "proposalId"}
     assert state["research"]["recordSha256"] == R.sha256_hex(wired.research.get(key).data)
@@ -165,7 +165,7 @@ def test_waiting_needs_a_run(wired):
 def ready(wired, extra=None):
     wired.bootstrap()
     key = wired.save_run(accepted_run())
-    return {**started(extra), "research": {"status": "accepted", "runKey": key, "proposalId": "prop-20261002T030000Z-1169b48e"}}
+    return {**started(extra), "research": {"status": "accepted", "runKey": key, "proposalId": "prop-20261002T030000Z-7dd4e9c6"}}
 
 
 def test_the_publish_step_makes_the_proposal_live_and_writes_the_message(wired):
@@ -177,7 +177,7 @@ def test_the_publish_step_makes_the_proposal_live_and_writes_the_message(wired):
     note = state["notification"]
     assert note["subject"] == f"[LLMOps portal] published {pub['releaseId']} (2 files)"
     assert note["subject"].isascii() and len(note["subject"]) <= 100
-    for expected in (pub["releaseId"], "prop-20261002T030000Z-1169b48e", "data/lifecycle.json", "在 portal 查看：https://main.d111.amplifyapp.com",
+    for expected in (pub["releaseId"], "prop-20261002T030000Z-7dd4e9c6", "data/lifecycle.json", "在 portal 查看：https://main.d111.amplifyapp.com",
                      f"aws stepfunctions start-execution --region us-east-1 --state-machine-arn {SFN}", '"action": "rollback"', "不需要重新部署"):
         assert expected in note["message"], expected
     assert len(json.dumps(state).encode("utf-8")) < 50_000
@@ -188,10 +188,10 @@ def test_in_review_mode_the_message_carries_the_approve_command(wired, monkeypat
     state = H.publish(ready(wired))
     assert state["publish"]["status"] == "pending" and R.load_current(wired.data).manifest["sequence"] == 1
     note = state["notification"]
-    assert note["subject"] == "[LLMOps portal] approval needed: prop-20261002T030000Z-1169b48e"
+    assert note["subject"] == "[LLMOps portal] approval needed: prop-20261002T030000Z-7dd4e9c6"
     sha = P.proposal_sha256(accepted_run()["proposal"])
     # the command approves exactly the content this message shows
-    assert f'{{"action": "approve", "proposalId": "prop-20261002T030000Z-1169b48e", "sha256": "{sha}", "by": "<你的名字>"}}' in note["message"]
+    assert f'{{"action": "approve", "proposalId": "prop-20261002T030000Z-7dd4e9c6", "sha256": "{sha}", "by": "<你的名字>"}}' in note["message"]
     assert '"action": "discard"' in note["message"] and "發布模式是 review" in note["message"] and '"action": "rollback"' not in note["message"]
 
 
@@ -208,7 +208,7 @@ def test_the_message_shows_each_change_with_the_quote_it_rests_on(wired, monkeyp
                      "  ~ data/lifecycle.json/events/azure-claude-sonnet-4-5-eol/date", '      "2026-11-15" → "2026-11-30"',
                      "  + data/lifecycle.json/events/azure-claude-sonnet-4-5-eol/conflicts/1", '"kind": "superseded"',
                      "提案的理由與引文（2 個 operation）", "  1. 修改 data/lifecycle.json/events/azure-claude-sonnet-4-5-eol/date",
-                     FOUNDRY, "official", "portalctl.py show prop-20261002T030000Z-1169b48e"):
+                     FOUNDRY, "official", "portalctl.py show prop-20261002T030000Z-7dd4e9c6"):
         assert expected in held, expected
     # (a quote is text from a web page: its line is laid out, see test_text_from_elsewhere_never_begins_a_line_of_the_window)
     assert squash(f"依據（official · Microsoft）：「{QUOTE}」") in squash(held)
@@ -216,7 +216,7 @@ def test_the_message_shows_each_change_with_the_quote_it_rests_on(wired, monkeyp
     assert squash("表頭：Model | Version | Lifecycle status | Retirement date | Replacement") in squash(held)
     assert squash("位置：Model retirement schedule › Claude models") in squash(held)
     monkeypatch.setenv("PUBLISH_MODE", "auto")
-    live = H.publish({"input": {"action": "approve", "proposalId": "prop-20261002T030000Z-1169b48e", "by": "eunice"}})["notification"]["message"]
+    live = H.publish({"input": {"action": "approve", "proposalId": "prop-20261002T030000Z-7dd4e9c6", "by": "eunice"}})["notification"]["message"]
     assert "已發布新的資料版本" in live and '"2026-11-15" → "2026-11-30"' in live and FOUNDRY in live
 
 
@@ -373,7 +373,7 @@ def test_approve_discard_and_rollback_are_actions_of_the_same_step(wired, monkey
     H.publish(ready(wired))
     base = R.load_current(wired.data).release_id
 
-    approved = H.publish({"input": {"action": "approve", "proposalId": "prop-20261002T030000Z-1169b48e", "by": "eunice"}})
+    approved = H.publish({"input": {"action": "approve", "proposalId": "prop-20261002T030000Z-7dd4e9c6", "by": "eunice"}})
     assert approved["publish"]["status"] == "published"
     assert R.load_current(wired.data).manifest["source"]["approvedBy"] == "eunice"
 
@@ -416,16 +416,16 @@ def test_a_step_that_is_retried_after_it_ran_reports_what_it_did_the_first_time(
 def test_a_retried_approval_and_a_retried_discard_get_their_first_answer(wired, monkeypatch):
     monkeypatch.setenv("PUBLISH_MODE", "review")
     assert H.publish(ready(wired))["publish"]["status"] == "pending"
-    approve = exec_state("approve-1", {"action": "approve", "proposalId": "prop-20261002T030000Z-1169b48e", "by": "eunice"})
+    approve = exec_state("approve-1", {"action": "approve", "proposalId": "prop-20261002T030000Z-7dd4e9c6", "by": "eunice"})
     first, again = H.publish(dict(approve)), H.publish(dict(approve))
     assert first["publish"]["status"] == again["publish"]["status"] == "published" and again["publish"]["releaseId"] == first["publish"]["releaseId"]
     assert again["notification"]["subject"] == first["notification"]["subject"] and R.load_current(wired.data).manifest["sequence"] == 2
     # somebody else's approval of the same proposal: told who did it, not "the pipeline failed"
-    late = H.publish(exec_state("approve-2", {"action": "approve", "proposalId": "prop-20261002T030000Z-1169b48e", "by": "amy"}))
+    late = H.publish(exec_state("approve-2", {"action": "approve", "proposalId": "prop-20261002T030000Z-7dd4e9c6", "by": "amy"}))
     assert late["publish"]["status"] == "already_published" and "已經由 eunice 於" in late["notification"]["message"]
     # what the proposal was is read from the release it became - and what is not known is not printed as a number
     assert "摘要：Microsoft Foundry 退役表" in late["notification"]["message"] and "提案內容：2 個 operation" in late["notification"]["message"]
-    too_late = H.publish(exec_state("discard-1", {"action": "discard", "proposalId": "prop-20261002T030000Z-1169b48e", "by": "amy"}))
+    too_late = H.publish(exec_state("discard-1", {"action": "discard", "proposalId": "prop-20261002T030000Z-7dd4e9c6", "by": "amy"}))
     assert too_late["publish"]["status"] == "rejected" and "核准並發布" in too_late["notification"]["message"]
 
     record = accepted_run()
@@ -500,7 +500,7 @@ def test_a_refused_proposal_is_reported_with_the_reasons(wired):
     key = wired.save_run(record)
     state = H.publish({**started(), "research": {"status": "accepted", "runKey": key}})
     assert state["publish"]["status"] == "rejected"
-    assert state["notification"]["subject"] == "[LLMOps portal] update NOT published: prop-20261002T030000Z-1169b48e"
+    assert state["notification"]["subject"] == "[LLMOps portal] update NOT published: prop-20261002T030000Z-7dd4e9c6"
     assert "SAMPLE" in state["notification"]["message"] and "維持原狀" in state["notification"]["message"]
 
 
@@ -807,12 +807,12 @@ def test_an_approval_can_name_the_content_it_approves(wired, monkeypatch):
     H.publish(ready(wired))
     sha = P.proposal_sha256(accepted_run()["proposal"])
     base = R.load_current(wired.data).release_id
-    wrong = H.publish({"input": {"action": "approve", "proposalId": "prop-20261002T030000Z-1169b48e", "sha256": "f" * 64}})
+    wrong = H.publish({"input": {"action": "approve", "proposalId": "prop-20261002T030000Z-7dd4e9c6", "sha256": "f" * 64}})
     assert wrong["publish"]["status"] == "rejected" and "sha256 不符" in wrong["notification"]["message"] and R.load_current(wired.data).release_id == base
     for malformed in ("abc", 5, ["x"], "F" * 64):
         with pytest.raises(H.BadRequest, match="sha256"):
-            H.publish({"input": {"action": "approve", "proposalId": "prop-20261002T030000Z-1169b48e", "sha256": malformed}})
-    right = H.publish({"input": {"action": "approve", "proposalId": "prop-20261002T030000Z-1169b48e", "sha256": sha, "by": "eunice"}})
+            H.publish({"input": {"action": "approve", "proposalId": "prop-20261002T030000Z-7dd4e9c6", "sha256": malformed}})
+    right = H.publish({"input": {"action": "approve", "proposalId": "prop-20261002T030000Z-7dd4e9c6", "sha256": sha, "by": "eunice"}})
     assert right["publish"]["status"] == "published"
 
 

@@ -69,6 +69,7 @@ portal/
 | `source` | 這一版怎麼來的：`agent`（含 `proposalId`、`proposalSha256`、`runId`、`approvedBy`）、`manual`、`bootstrap`、`rollback` |
 | `autoPublish` | 自動發布的暫停旗標（`{"paused": true, "by", "at", "reason"}`）。放在指標裡，所以「現在是不是暫停」和「切換指標」是同一次條件寫入 |
 | `history` | 最近 60 次發布的摘要 |
+| `versions` | 每日版本：每個台北日期結束時上線的是哪個 release，一天一筆，保留最近 30 天（`releases.VERSIONS_LIMIT`）；portal 的 build 用它替每一天建一個版本。這只是一份名單：release 本身**永遠不刪**，每一個都是它當時內容的不可變紀錄，從名單上掉下去的照樣在 `releases/` 底下，照樣可以 `portalctl show` 與 rollback（發布紀錄以外的要加 `--unlisted`，見第 4 節） |
 
 為什麼是「指標 + 不可變的 release」而不是直接覆寫檔案：
 
@@ -89,6 +90,11 @@ portal/
 - schema 本身（`schema/llmops.schema.json`）跟著資料走，放在每個 release 裡；agent 驗證提案用的是**上線中那一版**的 schema，不是它自己帶的。
 - 改 schema 的順序：先 `portalctl pull`（讓 checkout 對齊上線的資料）→ 在 portal repo 改 `schema/types.ts` → `npm run schema` 產生
   `llmops.schema.json` → `portalctl push`（會用新 schema 驗證全部資料）。只改 schema 時可以不 pull：`portalctl push --only schema`。
+- **新欄位要 agent 寫的時候，上線順序是 schema → Lambda bundle → agent。** 例：digest 項目與行動項目的 `topic`／`check`／`merges`。
+  (1) portal repo 加上這三個欄位的 schema merge 之後，先 `portalctl push --only schema --portal ../llmops-portal`：agent 用上線中的 schema 驗證提案，
+  schema 還不認得這些欄位時，帶著它們的 digest 會被 agent 與發布端的 schema 檢查擋下（`additionalProperties: false`）。
+  (2) 再部署新的 Lambda bundle（`build_lambdas.py --upload` → 更新 pipeline stack）：發布端重新套用時檢查 `merges` 是不是先前項目的標題；
+  舊的 bundle 不檢查，而 agent 不拿 `merges` 裡的日期對照引文，就是因為發布端會再確認一次。(3) 最後 `agentcore deploy`：新的 agent 才會寫這些欄位。
 
 ## 3. 一次更新怎麼走（state machine）
 
@@ -137,7 +143,7 @@ execution history 可以直接看到每一步拿到什麼、做了什麼決定�
 
 **`auto` 模式下，不經過人就上線的只有兩種變更：**
 
-1. **新增的內容**：一筆新紀錄、附加在後面的一則備註、多引用一個來源、一份新的 digest。
+1. **新增的內容**：一筆新紀錄、附加在後面的一則備註、多引用一個來源、一份新的 digest。（新的 deep dive 例外：它也是新增的內容，但一律等人，見下表）
 2. **既有紀錄上的日期、數字、版本改了**——這三種值可以逐字和引文比對，而且 agent 的驗證器已經確認過：值出現在一則引文裡、那一則引文講的是這個模型（不是同一頁的另一個模型）、引文所在頁面的來源層級夠高。
    算不算這一類，看的是**變更**而不是新值長什麼樣子：日期換成日期、數字換成數字、版本換成版本才算。一段文字、一個識別字串或一個分類被換成「看起來像日期」的值，是改寫，要等人。
 
@@ -164,7 +170,9 @@ agent 的輸出只是**提案**。發布流程不信任它：用和 agent 相同
 | 某一項變更的「原值」和上線中的資料不符 | 資料在研究之後被改過；套用會蓋掉別人的更新 |
 | operation 建立在同一份提案裡前一個 operation 的結果上：改它剛新增或改過的東西、在清單被動過之後用位置指定 | 「原值」是對照今天的資料記錄的；這樣寫的話，顯示給人看的和實際被取代的就不是同一個東西 |
 | operation 不是 `add`／`replace`／`remove`（沒有 `create`），或它的對象是 `sources.json`、既有的 digest、整個檔案、`asOf`／`generatedAt`／`schema` | 來源只能經由 `newSources` 新增、digest 只能整份新增、時間戳記由流程蓋；agent 的驗證器不會產生這些 operation |
+| 建立檔案（`add`、路徑為空），但不是「catalog 裡的模型、還沒有的 deep dive」：檔名不是 `data/models/<模型 id>.json`（以英數字開頭）、檔案已經存在（包括研究之後才有人發布的）、那個 id 不在 catalog 裡（今天的 catalog，或同一份提案**前面**的 operation 新增的模型）、另一個檔名的 deep dive 已經是這個模型的（它的 `modelId`）、`modelId` 和檔名不符、或同一份提案後面的 operation 又去改這個新檔案 | operation 能建立的檔案只有這一種（`patch.create_problem`）。新檔案的每一個值都是新增的，和其他新增的內容一樣經過 schema、跨檔（來源存在、`modelId` 在 catalog）與保護欄位的檢查；`asOf` 一律由流程蓋成提案當天 |
 | 新的 digest 的 `id` 不等於 `periodEnd`、期間在未來、或同一個 id 的 digest 已經存在 | digest 的檔名就是它的日期 |
+| 新的 digest 的項目用 `merges` 列了一個不是先前 digest（期間結束日比它早）**同一區**項目標題的字串（行動項目：先前行動項目的 `action` 原文；比對前做和 portal Radar 相同的正規化） | `merges` 裡的日期不對照引文，因為它們應該是 portal 上已經有、上線時檢查過的標題；對不上的就是沒有人檢查過的文字，Radar 也找不到要合併的項目 |
 | 套用後出現新的 schema 或跨檔檢查問題（含日期時間的格式、連結欄位不是單純的 `https://` 網址、`data/litellm.json` 裡 Gateway 頁面無法解析的版本） | UI 讀到會出錯，或連結會把人帶到別的地方 |
 | 新增的紀錄和清單裡既有的一筆用同一個 key（`id`、`service`、`feature`、`alias`、`scope`、`endpoint`，release 的 `version`） | 頁面會顯示新的那一筆：名義上是新增，實際上改寫了既有的紀錄（包含團隊自己實測過的） |
 | 改到研究資料以外的檔案（`runs/`、`data/internal/`、`config/`、schema） | 那些檔案由人與工具維護 |
@@ -194,6 +202,7 @@ agent 的輸出只是**提案**。發布流程不信任它：用和 agent 相同
 | 把某筆資料原有的引用來源全部拿掉 | `AutoAllowRemove` |
 | 修改既有模型的識別欄位（`name`、`vendor`、`family`、`vendorModelId`） | 固定：`platformStatus` 是針對原本那個模型核定的 |
 | 動到 `data/requirements.json`（需求、發布關卡、指標定義），包含只是更新它的 `asOf` | 固定 |
+| 新增模型的 deep dive（`data/models/<id>.json` 原本不在上線的資料裡，套用後會有）。判斷依據是實際的差異（`labels.new_deep_dives`），不是 operation 怎麼寫 | 固定：deep dive 大多是文字（新功能、breaking changes、onboarding、優缺點），日期與金額可以對照引文，其餘沒有程式能判斷 |
 | 新增或修改了標示為 `derived` 的內容（由其他資料推算的值，沒有引文可以對照），包含這種紀錄底下的任何欄位，以及把標籤從 `derived` 改成別的 | 固定 |
 | 把某個檔案標成「今天整份重新確認過」（`asOf`），或把某筆資料標成「今天對照來源確認過」（`lastVerified`），但這次研究沒有把它引用的來源頁面全部讀過——或提案沒有說它讀了哪些、說的數量和實際引用的不符 | 固定 |
 | 把 `lastVerified` 設成提案當天以外的日期 | 固定 |
@@ -211,7 +220,7 @@ agent 的輸出只是**提案**。發布流程不信任它：用和 agent 相同
 **agent 自己也擋**：上面兩張表的多數情況，agent 的驗證器會先處理，而且用的是同一份程式（重新套用、差異比對、標籤與時間戳記的判斷）。
 會被當成錯誤退回給模型修正的：新增或改動的日期、數字、版本不在**同一則**講這個模型、層級也夠的引文裡（規則在 [agent](agent.md) 第 2 節；引文講的是不是這個模型、程式拿不準的時候不退回，而是接受並加上旗標，由發布端等人）；用了清單裡已經有的 key；
 operation 建立在前一個之上；路徑中途用了位置；單一 operation 改寫太多值；直接寫蓋章欄位；`lastVerified` 不是當天、或它引用的來源一個都沒讀；
-`asOf` 一個來源都沒讀；把引用來源清空或重複引用；文字裡出現這次研究從頭到尾沒看過的連結；team 的測試欄位。
+`asOf` 一個來源都沒讀；把引用來源清空或重複引用；文字裡出現這次研究從頭到尾沒看過的連結；team 的測試欄位；digest 的 `topic` 格式不對、`merges` 不是先前項目的標題。
 通過但會讓提案等人的，驗證器會先警告模型（「這一項會等人核准」），並記在提案裡：`validation.flags`（像指令的文字、沒讀過的網址、對象不確定、沒有引文可對照的值、digest 沒有重新讀取或查無出處的項目），
 讀了幾個來源在 `validation.asOfCoverage` 與 `validation.lastVerifiedCoverage`。
 發布流程對這些紀錄的態度是**只會因為它們變得更嚴格**：差異是自己算的，連結是自己對照 portal 的來源判斷的（研究宣稱讀過哪些頁面，它不採信）；
@@ -227,6 +236,8 @@ agent 的紀錄只能讓提案多等一個人，不能讓它少等。
 `PlatformInventory` 與研究資料的七種檔案）與跨檔規則；只拒絕「這次會帶進來的新問題」，已經在線上的問題不會卡住無關的更新。
 push 是**逐檔三方合併**：以 checkout 當初 pull 下來的那個 release 為基準，checkout 沒改的檔案維持上線中的版本、只有 checkout 改過的採用 checkout 的、
 兩邊都改過的是衝突（預設停下來）。所以舊的 checkout 不會把 agent 的更新蓋掉，別人剛發布的測試結果也不會被刪掉。
+衝突用 `portalctl pull` 解決：它以同一個基準把上線的 release 合併回 checkout，兩邊都改過的 `data/` JSON 逐筆合併（`portal_pipeline/jsonmerge.py`，
+紀錄依 `patch.record_key` 對齊），只有兩邊把同一個值改得不一樣才停下來、列出 JSON pointer；合併後再 push。
 `--force`（衝突時以 checkout 為準）與 `--allow-invalid`（驗證沒過仍然發布）是兩個分開的開關。
 兩個開關都不能發布一份缺少 UI 必要檔案的資料（schema、`sources`、`catalog`、`lifecycle`、`litellm`）：那不是「資料有問題」，是整個 portal 打不開。
 checkout 裡**沒有被讀取**的東西（不是 UI 會讀的檔案、symlink）不算「checkout 把它刪了」：上線中的那一份維持原狀。
@@ -257,7 +268,7 @@ portal repo 的 `data/` 變成**工作副本與種子**：第一次用它建立�
 | 網頁是不可信的輸入 | agent 端：SafeFetcher（只允許 https、擋私有網段與 metadata IP）、引文必須逐字出現在抓回的頁面上、信任層級由網域決定、偵測像是對 AI 下指令的文字（英文與中文；全形、形似字母、隱形字元等寫法先還原再比對）。頁面的內文、標題、大綱、連結都掃；搜尋結果的標題、摘要、日期與網址也掃，命中的不給模型看，日期欄位只放行真的日期。這是啟發式的偵測，會漏、偶爾也會誤判，所以它只決定「要不要請人看一眼」，不是唯一的防線 |
 | 模型輸出是不可信的輸入 | 發布端：不呼叫模型、不上網；重新套用與驗證；關卡從實際的差異判斷；只允許改研究資料；有疑慮的提案等人 |
 | 通知訊息與指令列輸出 | 所有外來的文字（模型、網頁、提案的每個欄位、錯誤訊息）一律壓成單行、去掉控制字元與方向控制字元、截斷，無法偽裝成訊息裡給人執行的指令，也無法操縱終端機；subject 只有 ASCII |
-| 最小權限 | runtime 角色：讀 `portal/*`（明確拒絕 `data/internal/` 與 `runs/`）、寫 `research/*`。Publish function：讀寫 `portal/*` `pipeline/*`、讀 `research/*`，不能刪除 `portal/` 底下任何東西。其餘 function 只有各自需要的動作；state machine 只能呼叫這四個 function 與發通知 |
+| 最小權限 | runtime 角色：讀 `portal/*`（明確拒絕 `data/internal/` 與 `runs/`）、寫 `research/*`，自己的結果只讀得到 role 之間的交接紀錄 `research/handoff/*`（[daily-agents-design](daily-agents-design.md) 4.1）。Publish function：讀寫 `portal/*` `pipeline/*`、讀 `research/*`，不能刪除 `portal/` 底下任何東西。其餘 function 只有各自需要的動作；state machine 只能呼叫這四個 function 與發通知 |
 | bucket | private、BlockPublicAccess、強制 TLS、SSE-S3、versioning；只有 CloudFront（OAC，限定這個 distribution）讀得到 `portal/*` |
 | 資料位置的存取 | 網址第一段是 token（CloudFront Function 檢查後移除）；可再加 WAF（例如辦公室 IP allow list）。**token 是分享連結等級的保護，不是身分驗證**（見下） |
 | 誰可以發布 | 有 `OperatorPolicy`（透過流程）或 S3 寫入權限（`--direct`）的人。發布紀錄裡的操作者名稱（`--by`）是自己填的，方便辨識，不是身分證明；要查證是誰做的，看 Step Functions 的 execution 與 CloudTrail |
