@@ -793,7 +793,7 @@ def _listing(ctx: Ctx, files: dict[str, bytes]) -> None:
     """What is about to become readable by everyone who can open the UI, grouped by who owns it."""
     groups = {"研究資料（agent 維護）": [], "內部清單與測試結果（平台團隊與工具）": [], "其他（schema、設定範例）": []}
     for rel in sorted(files):
-        if rel.startswith(("runs/", "data/internal/")):
+        if rel.startswith(("runs/", "data/internal/")) or rel == "data/provider-compatibility.json":
             groups["內部清單與測試結果（平台團隊與工具）"].append(rel)
         elif rel.startswith("data/"):
             groups["研究資料（agent 維護）"].append(rel)

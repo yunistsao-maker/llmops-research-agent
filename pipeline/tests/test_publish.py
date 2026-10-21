@@ -2192,3 +2192,15 @@ def test_security_cases_are_published_only_in_their_redacted_form():
     assert [p.where for p in problems({**ok, "public": False})] == [""]
     full_run = {"schema": "security-run/v1", "runId": "r", "items": [], "cases": [hidden]}
     assert problems(full_run) and all("遮蔽版" in p.message for p in problems(full_run))  # a full run renamed .cases.json
+
+
+def test_the_documented_provider_matrix_is_published_and_validated_as_a_people_maintained_file():
+    """data/provider-compatibility.json (both UI editions) goes into a release like the test results: a checkout may carry
+    it, and it is checked against its own type; the agent's research files do not include it."""
+    from research.portal import data as D
+
+    assert R.publishable("data/provider-compatibility.json") and not D.is_data_path("data/provider-compatibility.json")
+    schema = {"definitions": {"ProviderCompatibilityFile": {"type": "object", "required": ["schema"]}}}
+    ok = P.tool_file_problems(schema, {"data/provider-compatibility.json": json.dumps({"schema": "provider-compatibility/v1"}).encode()})
+    bad = P.tool_file_problems(schema, {"data/provider-compatibility.json": json.dumps({"asOf": "2026-10-22"}).encode()})
+    assert ok == [] and bad and bad[0].file == "data/provider-compatibility.json"
