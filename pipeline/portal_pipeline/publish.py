@@ -63,6 +63,7 @@ STALE_CLAIM = dt.timedelta(minutes=15)
 #: file -> type table as the portal's own tools/validate_data.py.
 TOOL_FILE_TYPES = (
     ("data/internal/platform-inventory*.json", "PlatformInventory"),
+    ("data/provider-compatibility.json", "ProviderCompatibilityFile"),  # documented LiteLLM provider matrix (方法與來源 → 測試方法)
     ("runs/perf/*.json", "PerfRun"),
     ("runs/compat/*.json", "CompatRun"),
     ("runs/security/*.cases.json", "SecurityRunCases"),  # sec_suite.py publish: cases, redacted (first: the pattern below matches it too)

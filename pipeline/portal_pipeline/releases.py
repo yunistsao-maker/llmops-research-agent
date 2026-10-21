@@ -130,6 +130,7 @@ PUBLISHABLE = (
     "schema/llmops.schema.json",
     "data/sources.json", "data/catalog.json", "data/lifecycle.json", "data/litellm.json", "data/requirements.json",
     "data/digests/*.json", "data/models/*.json", "data/open-models.json",
+    "data/provider-compatibility.json",  # the documented LiteLLM provider matrix (people maintain it; both UI editions)
     "data/internal/platform-inventory*.json",
     "runs/compat/*.json", "runs/perf/*.json", "runs/security/*.json",
     "config/litellm.example.yaml",
